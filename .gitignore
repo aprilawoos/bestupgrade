@@ -15,6 +15,9 @@ coverage
 # local Claude Code settings
 .claude
 
+# downloaded OSRS cache (fetched via scripts/fetch-cache.mjs; large, not redistributable)
+cache
+
 # misc
 *.local
 .DS_Store
