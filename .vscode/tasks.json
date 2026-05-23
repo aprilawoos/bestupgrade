@@ -1,0 +1,32 @@
+{
+  // === Background tasks for F5 ===
+  // "Start Next" runs `next dev` as a background task. The problemMatcher's
+  // pattern matches only empty lines (so Next's log output doesn't spam the
+  // Problems panel); the background block tells VS Code when Next is "ready"
+  // so the debugger knows it's safe to attach.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Next",
+      "type": "npm",
+      "script": "dev",
+      "isBackground": true,
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false
+      },
+      "problemMatcher": {
+        "owner": "next",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Next\\.js.*",
+          "endsPattern": "^.*Ready.*"
+        }
+      }
+    }
+  ]
+}

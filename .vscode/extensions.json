@@ -1,0 +1,6 @@
+{
+  // Suggested when the workspace is opened. VS Code will prompt to install.
+  "recommendations": [
+    "firefox-devtools.vscode-firefox-debug"
+  ]
+}

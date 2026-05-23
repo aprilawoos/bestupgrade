@@ -1,0 +1,33 @@
+# dependencies
+node_modules
+
+# next
+.next
+out
+next-env.d.ts
+
+# typescript incremental build info
+tsconfig.tsbuildinfo
+
+# jest coverage output
+coverage
+
+# local Claude Code settings
+.claude
+
+# misc
+*.local
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

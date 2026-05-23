@@ -1,0 +1,24 @@
+{
+  // === F5 debug configuration ===
+  // Starts the Next.js dev server via the "Start Next" task, then launches
+  // Firefox at the served URL with the debugger attached so breakpoints
+  // set in .tsx files work.
+  //
+  // Requires the third-party extension: firefox-devtools.vscode-firefox-debug
+  // (VS Code will prompt to install it on first F5 thanks to extensions.json.)
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch in Firefox",
+      "type": "firefox",
+      "request": "launch",
+      "reAttach": true,
+      "url": "http://localhost:3000",
+      "webRoot": "${workspaceFolder}",
+      "pathMappings": [
+        { "url": "http://localhost:3000", "path": "${workspaceFolder}" }
+      ],
+      "preLaunchTask": "Start Next"
+    }
+  ]
+}
