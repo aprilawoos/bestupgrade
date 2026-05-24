@@ -1,11 +1,11 @@
 // === Home page ===
-// End-to-end sanity check that the vendored calc is wired up correctly:
-// roll a random loadout, run PlayerVsNPCCalc against an Abyssal demon,
-// render the DPS. Button rerolls. No upgrade-ranking logic here yet —
-// this just proves the engine produces a number end-to-end in the browser.
+// Random gear roll → DPS computed against an Abyssal demon → 3D viewers
+// for the composed player loadout (left) and the demon (right).
+// Reroll regenerates the loadout, recomputes the DPS, and the viewer
+// refetches the new composed geometry from the API.
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import merge from 'lodash.mergewith';
 
 import { availableEquipment, calculateEquipmentBonusesFromGear } from '@/lib/Equipment';
@@ -14,8 +14,10 @@ import PlayerVsNPCCalc from '@/lib/PlayerVsNPCCalc';
 import { generateEmptyPlayer } from '@/state';
 import { getCombatStylesForCategory } from '@/utils';
 import { EquipmentCategory } from '@/enums/EquipmentCategory';
-import type { EquipmentPiece, Player, PlayerEquipment } from '@/types/Player';
+import type { Player, PlayerEquipment } from '@/types/Player';
 import type { Monster } from '@/types/Monster';
+
+import { ModelViewer } from '@/viewer/ModelViewer';
 
 // === Slot list ===
 // Mirrors PlayerEquipment in order; used both to drive random selection and
@@ -27,6 +29,8 @@ const SLOTS: (keyof PlayerEquipment)[] = [
 // === Test target ===
 // Standard-variant Abyssal demon. The Catacombs / Wilderness Slayer Cave
 // variants exist too but have identical stats — picking the simplest.
+const DEMON_NPC_ID = 415;
+
 function getAbyssalDemon(): Monster {
   const base = getMonsters().find(
     (m) => m.name === 'Abyssal demon' && m.version === 'Standard',
@@ -84,44 +88,72 @@ export default function Home() {
   const [result, setResult] = useState<CalcResult | null>(null);
   const reroll = useCallback(() => setResult(rollAndCalc()), []);
 
+  // Comma-joined item IDs for the player viewer's API call. Recomputed
+  // whenever the loadout changes; ModelViewer keys off the URL so a new
+  // value triggers a refetch + re-render.
+  const playerSrc = useMemo(() => {
+    if (!result) return null;
+    const ids = SLOTS
+      .map((slot) => result.player.equipment[slot]?.id)
+      .filter((id): id is number => typeof id === 'number');
+    return `/api/player/base?gender=female&items=${ids.join(',')}&kits=296`;
+  }, [result]);
+
   return (
-    <main>
+    <main style={{ maxWidth: 1280 }}>
       <h1>BestUpgrade — calc sanity check</h1>
       <p>
-        Rolls a random gear set and runs the vendored DPS engine against an
-        Abyssal demon. If a number renders here, the calc is wired up.
+        Rolls a random gear set, runs the vendored DPS engine against an
+        Abyssal demon, and renders both in 3D. First model load triggers
+        the cache parse (~30s on the dev server's first request).
       </p>
+
       <button onClick={reroll} style={{ padding: '0.5rem 1rem', fontSize: '1rem' }}>
         {result ? 'Reroll loadout' : 'Roll loadout'}
       </button>
 
       {result && (
-        <section style={{ marginTop: '1.5rem' }}>
-          <p>
-            <strong>vs {result.monster.name}</strong> (HP {result.monster.skills.hp},
-            Def {result.monster.skills.def})
-          </p>
-          <p style={{ fontSize: '1.5rem' }}>
-            DPS: <strong>{result.dps.toFixed(3)}</strong>
-          </p>
-          <p style={{ color: '#888' }}>
-            Style: {result.player.style.name} ({result.player.style.type ?? 'n/a'},{' '}
-            {result.player.style.stance ?? 'n/a'}) · Attack speed:{' '}
-            {result.player.attackSpeed} ticks
-          </p>
-          <h2>Loadout</h2>
-          <ul>
-            {SLOTS.map((slot) => {
-              const item = result.player.equipment[slot];
-              return (
-                <li key={slot}>
-                  <strong>{slot}:</strong> {item?.name ?? '—'}
-                  {item?.version ? ` (${item.version})` : ''}
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+        <>
+          <section style={{ marginTop: '1.5rem' }}>
+            <p style={{ fontSize: '1.5rem', margin: 0 }}>
+              DPS: <strong>{result.dps.toFixed(3)}</strong>{' '}
+              <span style={{ color: '#888', fontSize: '1rem' }}>
+                vs {result.monster.name} (HP {result.monster.skills.hp}, Def {result.monster.skills.def})
+              </span>
+            </p>
+            <p style={{ color: '#888', marginTop: '0.25rem' }}>
+              Style: {result.player.style.name} ({result.player.style.type ?? 'n/a'},{' '}
+              {result.player.style.stance ?? 'n/a'}) · Attack speed:{' '}
+              {result.player.attackSpeed} ticks
+            </p>
+          </section>
+
+          <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '1rem' }}>
+            <div>
+              <h2 style={{ marginTop: 0 }}>Player</h2>
+              {playerSrc && <ModelViewer src={playerSrc} />}
+            </div>
+            <div>
+              <h2 style={{ marginTop: 0 }}>{result.monster.name}</h2>
+              <ModelViewer modelId={DEMON_NPC_ID} kind="npc" />
+            </div>
+          </section>
+
+          <section style={{ marginTop: '1rem' }}>
+            <h2>Loadout</h2>
+            <ul style={{ columns: 2, columnGap: '2rem' }}>
+              {SLOTS.map((slot) => {
+                const item = result.player.equipment[slot];
+                return (
+                  <li key={slot}>
+                    <strong>{slot}:</strong> {item?.name ?? '—'}
+                    {item?.version ? ` (${item.version})` : ''}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        </>
       )}
     </main>
   );

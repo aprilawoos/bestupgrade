@@ -125,10 +125,9 @@ export function ModelViewer({ modelId, kind = 'model', src, height = 480 }: Mode
         <ambientLight intensity={0.4} />
         <directionalLight position={[5, 10, 7]} intensity={1.2} />
         <directionalLight position={[-5, -10, -7]} intensity={0.4} />
-        {/* Rotate the whole assembled mesh 180° around Y so models face the
-            camera at default orientation. Applied to a parent <group> so all
-            parts (textured + untextured) stay aligned. */}
-        <group rotation={[0, Math.PI, 0]}>
+        {/* Orientation is baked into the geometry (X-axis 180° rotation in
+            modelGeometry.ts: negates Y and Z). No additional rotation here. */}
+        <group>
           {geometries.map((g, i) => {
             const part = resp!.parts[i];
             const texKey = part.textureId != null ? String(part.textureId) : null;

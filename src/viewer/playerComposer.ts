@@ -98,8 +98,10 @@ export async function composePlayer(
   cache: any,
   gender: Gender,
   itemIds: number[],
+  kitOverrideIds: number[] = [],
 ): Promise<ComposedResponse> {
   // === Step 1: pick default kits per body part ===
+  // Lowest cache ID wins for each bodyPartId among `nonSelectable === false`.
   const allKits: KitDef[] = await cache.getAllDefs(IndexType.CONFIGS, ConfigType.IDENTKIT);
   const kitByPart = new Map<number, KitDef>();
   for (const kit of allKits) {
@@ -107,6 +109,18 @@ export async function composePlayer(
     if (kit.nonSelectable) continue;
     if (typeof kit.bodyPartId !== 'number' || kit.bodyPartId < 0) continue;
     if (!kitByPart.has(kit.bodyPartId)) kitByPart.set(kit.bodyPartId, kit);
+  }
+
+  // === Step 1b: apply kit overrides ===
+  // Each override is a kit id; we replace the default for its bodyPartId.
+  // Same pattern as items: just pass IDs, the kit's own bodyPartId tells
+  // the composer which slot it belongs in.
+  for (const kitId of kitOverrideIds) {
+    if (typeof kitId !== 'number' || kitId < 0) continue;
+    const kit: KitDef | undefined = allKits[kitId];
+    if (!kit) continue;
+    if (typeof kit.bodyPartId !== 'number' || kit.bodyPartId < 0) continue;
+    kitByPart.set(kit.bodyPartId, kit);
   }
 
   // === Step 2: seed the 12-slot equipment array with default kits ===

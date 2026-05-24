@@ -131,11 +131,11 @@ export function toSubGeometries(
     arr.push(f);
   }
 
-  // Per-bucket vertex order swap: OSRS triangle is [i0, i1, i2]; we emit
-  // [i0, i2, i1] to flip winding (compensating for the Y-flip below).
-  // Same swap must apply to the UV index order so the texture sticks to
-  // the same triangle corners.
-  const swappedIdx = [0, 2, 1];
+  // OSRS triangle winding survives our X-axis 180° rotation: a proper
+  // rotation preserves the visible CCW/CW order from the camera, so we
+  // don't reverse the index order. (Adding a swap here would invert
+  // front/back and render the model inside-out.)
+  const swappedIdx = [0, 1, 2];
 
   const out: SubGeometry[] = [];
   for (const [texId, faceList] of buckets) {
@@ -163,9 +163,16 @@ export function toSubGeometries(
       for (let k = 0; k < 3; k += 1) {
         const src = osrsVerts[swappedIdx[k]];
         const pBase = i * 9 + k * 3;
+        // X-axis 180° rotation: OSRS is Y-down right-handed and the player
+        // faces +Z (north). three.js is Y-up right-handed. Negating Y AND Z
+        // is X-rot 180° — a PROPER rotation (det = +1) that simultaneously
+        // (a) flips Y down→up and (b) flips the player's facing direction
+        // so their back is toward the +X+Y+Z camera (we see the cape /
+        // weapon-in-right-hand as in-game). Y-flip alone is improper and
+        // mirrors the model — weapon ends up in the wrong hand.
         positions[pBase + 0] = model.vertexPositionsX[src];
-        positions[pBase + 1] = -model.vertexPositionsY[src]; // Y-flip
-        positions[pBase + 2] = model.vertexPositionsZ[src];
+        positions[pBase + 1] = -model.vertexPositionsY[src];
+        positions[pBase + 2] = -model.vertexPositionsZ[src];
         colors[pBase + 0] = r;
         colors[pBase + 1] = g;
         colors[pBase + 2] = b;

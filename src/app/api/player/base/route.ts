@@ -1,12 +1,14 @@
-// === GET /api/player/base?gender=male|female&items=ID,ID,... ===
-// Returns the composed geometry of a player with the requested gender and
-// (optionally) a list of equipped items. Items are placed by their wearPos1
-// field; wearPos2/3 clear the visually-hidden kit slots. Order in the
-// comma-separated list doesn't matter.
+// === GET /api/player/base?gender=male|female&items=ID,...&kits=ID,... ===
+// Returns the composed geometry of a player with the requested gender,
+// optionally with equipped items and/or overridden kits (e.g. choose a
+// specific hair / facial-hair / torso style instead of the default first
+// selectable). Items use wearPos1/2/3 placement rules; kits use their
+// own bodyPartId to override the default per body part.
 //
 // Examples:
 //   /api/player/base?gender=male
-//   /api/player/base?gender=male&items=4151,1163,1127,1079,1135,2581
+//   /api/player/base?gender=female&kits=15
+//   /api/player/base?gender=male&items=4151,1163&kits=43,15
 
 import { NextResponse } from 'next/server';
 import { getCache } from '@/viewer/cache';
@@ -24,20 +26,23 @@ export async function GET(req: Request) {
     );
   }
 
-  const itemsParam = url.searchParams.get('items') ?? '';
-  const itemIds = itemsParam
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-    .map((s) => Number(s))
-    .filter((n) => Number.isFinite(n) && n >= 0);
+  const parseIds = (raw: string | null) =>
+    (raw ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .map((s) => Number(s))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+
+  const itemIds = parseIds(url.searchParams.get('items'));
+  const kitIds = parseIds(url.searchParams.get('kits'));
 
   const cache = await getCache();
-  const geom = await composePlayer(cache, genderParam as Gender, itemIds);
+  const geom = await composePlayer(cache, genderParam as Gender, itemIds, kitIds);
 
   if (geom.parts.length === 0) {
     return NextResponse.json(
-      { error: `composed geometry is empty for gender=${genderParam}, items=${itemIds.join(',')}` },
+      { error: `composed geometry is empty for gender=${genderParam}, items=${itemIds.join(',')}, kits=${kitIds.join(',')}` },
       { status: 500 },
     );
   }
