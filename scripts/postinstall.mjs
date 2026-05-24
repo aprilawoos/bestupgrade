@@ -47,3 +47,62 @@ if (existsSync(ITEM_LOADER)) {
     log(`patched: ${ITEM_LOADER}`);
   }
 }
+
+// --- patch 3: KitLoader handles opcode 5 (int32 models) ---------------------
+// Modern OSRS kits use opcode 5 (int32 model ids) instead of opcode 2
+// (uint16 model ids) when the model id exceeds 65535. Without this the
+// loader throws "Unknown opcode found: 5" and the kit fails to parse.
+// Insert a case 5 mirroring case 2 but reading int32.
+const KIT_LOADER = join(PKG, 'src', 'cacheReader', 'loaders', 'KitLoader.js');
+if (existsSync(KIT_LOADER)) {
+  const src = readFileSync(KIT_LOADER, 'utf8');
+  const before5 = `            case 3:
+                def.nonSelectable = true;
+                break;
+
+            case 40:`;
+  const after5 = `            case 3:
+                def.nonSelectable = true;
+                break;
+
+            case 5:
+                var length = dataview.readUint8();
+                def.models = [];
+                for (var index = 0; index < length; ++index) def.models[index] = dataview.readInt32();
+                break;
+
+            case 40:`;
+  if (src.includes(before5) && !src.includes('case 5:')) {
+    writeFileSync(KIT_LOADER, src.replace(before5, after5));
+    log(`patched (case 5): ${KIT_LOADER}`);
+  }
+}
+
+// --- patch 4: KitLoader handles opcodes 70-79 (int32 chathead models) -------
+// Same int32-vs-uint16 story for the chathead model fields. We don't use
+// these for 3D body rendering, but the loader throws if it doesn't consume
+// them — patching to read the 4 bytes and store in chatheadModels.
+if (existsSync(KIT_LOADER)) {
+  const src = readFileSync(KIT_LOADER, 'utf8');
+  const before70 = `            default:
+                if (opcode >= 60 && opcode < 70) {
+                    if (def.chatheadModels == undefined) def.chatheadModels = [];
+                    def.chatheadModels[opcode - 60] = dataview.readUint16();
+                } else {
+                    throw "Unknown opcode found: " + opcode;
+                }`;
+  const after70 = `            default:
+                if (opcode >= 60 && opcode < 70) {
+                    if (def.chatheadModels == undefined) def.chatheadModels = [];
+                    def.chatheadModels[opcode - 60] = dataview.readUint16();
+                } else if (opcode >= 70 && opcode < 80) {
+                    if (def.chatheadModels == undefined) def.chatheadModels = [];
+                    def.chatheadModels[opcode - 70] = dataview.readInt32();
+                } else {
+                    throw "Unknown opcode found: " + opcode;
+                }`;
+  if (src.includes(before70) && !src.includes('opcode - 70')) {
+    writeFileSync(KIT_LOADER, src.replace(before70, after70));
+    log(`patched (70-79): ${KIT_LOADER}`);
+  }
+}

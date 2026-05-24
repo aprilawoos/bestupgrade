@@ -1,7 +1,7 @@
-// === GET /api/model/[id] ===
-// Returns the composed geometry of a single OSRS model id. Always wraps
-// the single model in the same ComposedResponse shape used by the player
-// endpoint so the client viewer has one code path.
+// === GET /api/npc/[id] ===
+// Returns the composed geometry of an NPC by id, wrapped in the same
+// ComposedResponse shape as other endpoints. Currently uses only the
+// NPC's first model — multi-model merging is a later enhancement.
 
 import { NextResponse } from 'next/server';
 import { IndexType } from 'osrscachereader';
@@ -17,13 +17,24 @@ export async function GET(
 ) {
   const id = Number(params.id);
   if (!Number.isFinite(id) || id < 0) {
-    return NextResponse.json({ error: `invalid model id: ${params.id}` }, { status: 400 });
+    return NextResponse.json({ error: `invalid npc id: ${params.id}` }, { status: 400 });
   }
 
   const cache = await getCache();
-  const model = await cache.getDef(IndexType.MODELS, id);
+  const npc = await cache.getNPC(id);
+  if (!npc) {
+    return NextResponse.json({ error: `npc ${id} not found` }, { status: 404 });
+  }
+
+  const modelIds: number[] = npc.models ?? [];
+  if (modelIds.length === 0) {
+    return NextResponse.json({ error: `npc ${id} has no models` }, { status: 404 });
+  }
+
+  const modelId = modelIds[0];
+  const model = await cache.getDef(IndexType.MODELS, modelId);
   if (!model) {
-    return NextResponse.json({ error: `model ${id} not found` }, { status: 404 });
+    return NextResponse.json({ error: `model ${modelId} not found` }, { status: 404 });
   }
 
   const parts = mergeParts(toSubGeometries(model));

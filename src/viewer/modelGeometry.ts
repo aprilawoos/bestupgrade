@@ -1,16 +1,45 @@
-// === ModelDefinition → flat geometry payload ===
-// Extracts only what we need for a static three.js BufferGeometry: vertex
-// positions (one Float32Array of XYZ) and triangle indices (one Uint32Array).
-// Colors / UVs / animations deferred to later phases — phase 1 only proves
-// the pipeline.
+// =============================================================================
+// modelGeometry.ts — ModelDefinition → multi-part geometry payload
+// =============================================================================
 //
-// Wire format: { positions: number[], indices: number[] }
-// JSON-serializable so the API route can just send it as-is. We materialize
-// typed arrays on the client side.
+// Output shape (ComposedGeometry): { parts: SubGeometry[], textureIds: number[] }
+//
+// Each SubGeometry is one chunk of triangles sharing a single rendering mode:
+// either "untextured, use vertex colors" or "textured with texture id N".
+// The viewer creates one <mesh> per part with the appropriate material.
+//
+// A single OSRS model may be split into multiple parts because faces can
+// have different textures (or none). The composer merges parts across many
+// models, combining those that share the same textureId.
+//
+// Each face contributes 3 UNIQUE output vertices (no sharing across faces),
+// which keeps per-face colors and per-face UVs trivial to assign.
+//
+// All transformations applied here:
+//   - Y-flip (OSRS is Y-down, three.js is Y-up)
+//   - Triangle winding swap (compensates for the Y-flip; otherwise faces
+//     render inside-out under default back-face culling)
+//   - HSL → sRGB conversion for face colors
+//   - Optional recolor (HSL find→replace pairs) and retexture (textureId
+//     find→replace pairs) applied during extraction without mutating the
+//     cached model
+// =============================================================================
 
-export interface FlatGeometry {
-  positions: number[];
-  indices: number[];
+export interface SubGeometry {
+  positions: number[];     // [x,y,z, ...] in three.js Y-up space
+  colors: number[];        // [r,g,b, ...] in [0,1] — only meaningful for untextured parts
+  uvs?: number[];          // [u,v, ...] — present iff textureId is set
+  indices: number[];       // sequential 0..N-1 because vertices aren't shared
+  textureId?: number;      // undefined = untextured, render with vertexColors
+}
+
+export interface ComposedGeometry {
+  parts: SubGeometry[];
+}
+
+export interface ColorPair {
+  find: number;
+  replace: number;
 }
 
 interface OsrsModelDef {
@@ -22,26 +51,170 @@ interface OsrsModelDef {
   faceVertexIndices1: number[];
   faceVertexIndices2: number[];
   faceVertexIndices3: number[];
+  faceColors?: number[];
+  faceTextures?: number[];
+  faceTextureUCoordinates?: number[][];
+  faceTextureVCoordinates?: number[][];
+  faceRenderTypes?: number[];
+  computeTextureUVCoordinates?: (def: any) => void;
 }
 
-export function toFlatGeometry(model: OsrsModelDef): FlatGeometry {
-  // Vertex positions are stored as three parallel arrays of length vertexCount.
-  // Interleave into [x0,y0,z0, x1,y1,z1, ...] for BufferAttribute consumption.
-  const positions = new Array<number>(model.vertexCount * 3);
-  for (let i = 0; i < model.vertexCount; i += 1) {
-    positions[i * 3 + 0] = model.vertexPositionsX[i];
-    positions[i * 3 + 1] = model.vertexPositionsY[i];
-    positions[i * 3 + 2] = model.vertexPositionsZ[i];
+// === HSL → RGB (packed-uint16 OSRS format → three RGB floats) ==============
+const HUE_OFFSET = 0.5 / 64;
+const SATURATION_OFFSET = 0.5 / 8;
+
+function hslToRgb(hsl: number): [number, number, number] {
+  const hue = ((hsl >> 10) & 63) / 64 + HUE_OFFSET;
+  const saturation = ((hsl >> 7) & 7) / 8 + SATURATION_OFFSET;
+  const luminance = (hsl & 127) / 128;
+
+  const chroma = (1 - Math.abs(2 * luminance - 1)) * saturation;
+  const x = chroma * (1 - Math.abs(((hue * 6) % 2) - 1));
+  const lightness = luminance - chroma / 2;
+
+  let r = lightness;
+  let g = lightness;
+  let b = lightness;
+  switch (Math.floor(hue * 6)) {
+    case 0: r += chroma; g += x; break;
+    case 1: g += chroma; r += x; break;
+    case 2: g += chroma; b += x; break;
+    case 3: b += chroma; g += x; break;
+    case 4: b += chroma; r += x; break;
+    default: r += chroma; b += x; break;
+  }
+  return [r, g, b];
+}
+
+// Non-destructive lookup: original packed value → substituted value.
+function makeRemapLookup(pairs?: ColorPair[]): (v: number) => number {
+  if (!pairs || pairs.length === 0) return (v) => v;
+  const m = new Map<number, number>();
+  for (const { find, replace } of pairs) m.set(find, replace);
+  return (v) => m.get(v) ?? v;
+}
+
+// === Extract one model into one or more SubGeometries ======================
+export function toSubGeometries(
+  model: OsrsModelDef,
+  recolors?: ColorPair[],
+  retextures?: ColorPair[],
+): SubGeometry[] {
+  const recolor = makeRemapLookup(recolors);
+  const retexture = makeRemapLookup(retextures);
+
+  // Ensure per-face UVs are computed once. osrscachereader's helper writes
+  // faceTextureUCoordinates/faceTextureVCoordinates onto the model in place.
+  // Re-computation is cheap and only happens if the model has textures.
+  if (
+    model.faceTextures &&
+    model.computeTextureUVCoordinates &&
+    !model.faceTextureUCoordinates
+  ) {
+    model.computeTextureUVCoordinates(model);
   }
 
-  // Face indices: three parallel arrays naming the three vertices of each
-  // triangle. Flatten into one index array.
-  const indices = new Array<number>(model.faceCount * 3);
-  for (let i = 0; i < model.faceCount; i += 1) {
-    indices[i * 3 + 0] = model.faceVertexIndices1[i];
-    indices[i * 3 + 1] = model.faceVertexIndices2[i];
-    indices[i * 3 + 2] = model.faceVertexIndices3[i];
+  // Group face indices by (remapped) texture id. -1 = untextured bucket.
+  // Skip faces with faceRenderType >= 2 — OSRS marks non-rendered faces
+  // (the equivalent of "invisible" / collision-only / special) with these
+  // values. They aren't drawn by the game client and surface as stray
+  // triangles in a naive renderer. Type 0 = standard gouraud, type 1 =
+  // alternate lighting code path; both are rendered normally.
+  const buckets = new Map<number, number[]>();
+  for (let f = 0; f < model.faceCount; f += 1) {
+    const rt = model.faceRenderTypes?.[f] ?? 0;
+    if (rt >= 2) continue;
+    const rawTex = model.faceTextures ? model.faceTextures[f] : -1;
+    const remappedTex = rawTex >= 0 ? retexture(rawTex) : -1;
+    let arr = buckets.get(remappedTex);
+    if (!arr) { arr = []; buckets.set(remappedTex, arr); }
+    arr.push(f);
   }
 
-  return { positions, indices };
+  // Per-bucket vertex order swap: OSRS triangle is [i0, i1, i2]; we emit
+  // [i0, i2, i1] to flip winding (compensating for the Y-flip below).
+  // Same swap must apply to the UV index order so the texture sticks to
+  // the same triangle corners.
+  const swappedIdx = [0, 2, 1];
+
+  const out: SubGeometry[] = [];
+  for (const [texId, faceList] of buckets) {
+    const isTextured = texId !== -1;
+    const n = faceList.length;
+    const positions: number[] = new Array(n * 9);
+    const indices: number[] = new Array(n * 3);
+    const colors: number[] = new Array(n * 9);
+    const uvs: number[] | undefined = isTextured ? new Array(n * 6) : undefined;
+
+    for (let i = 0; i < n; i += 1) {
+      const f = faceList[i];
+      const osrsVerts = [
+        model.faceVertexIndices1[f],
+        model.faceVertexIndices2[f],
+        model.faceVertexIndices3[f],
+      ];
+
+      const faceColor = recolor(model.faceColors?.[f] ?? 0);
+      const [r, g, b] = hslToRgb(faceColor);
+
+      const uTri = model.faceTextureUCoordinates?.[f];
+      const vTri = model.faceTextureVCoordinates?.[f];
+
+      for (let k = 0; k < 3; k += 1) {
+        const src = osrsVerts[swappedIdx[k]];
+        const pBase = i * 9 + k * 3;
+        positions[pBase + 0] = model.vertexPositionsX[src];
+        positions[pBase + 1] = -model.vertexPositionsY[src]; // Y-flip
+        positions[pBase + 2] = model.vertexPositionsZ[src];
+        colors[pBase + 0] = r;
+        colors[pBase + 1] = g;
+        colors[pBase + 2] = b;
+        if (uvs && uTri && vTri) {
+          const uvBase = i * 6 + k * 2;
+          uvs[uvBase + 0] = uTri[swappedIdx[k]] ?? 0;
+          // three.js textures have V=0 at top, OSRS V=0 at bottom — flip V.
+          uvs[uvBase + 1] = 1 - (vTri[swappedIdx[k]] ?? 0);
+        }
+        indices[i * 3 + k] = i * 3 + k;
+      }
+    }
+
+    const part: SubGeometry = { positions, colors, indices };
+    if (uvs) part.uvs = uvs;
+    if (isTextured) part.textureId = texId;
+    out.push(part);
+  }
+
+  return out;
+}
+
+// === Merge: concatenate parts, combining like-textured ones ================
+// Parts with the same textureId (or both untextured) share a single output
+// part — saves draw calls on the client.
+export function mergeParts(allParts: SubGeometry[]): SubGeometry[] {
+  const bucketed = new Map<number, SubGeometry>(); // texId or -1 → merged part
+
+  for (const p of allParts) {
+    const key = p.textureId ?? -1;
+    let acc = bucketed.get(key);
+    if (!acc) {
+      acc = {
+        positions: [],
+        colors: [],
+        indices: [],
+        ...(p.uvs ? { uvs: [] } : {}),
+        ...(p.textureId != null ? { textureId: p.textureId } : {}),
+      };
+      bucketed.set(key, acc);
+    }
+    const vertexOffset = acc.positions.length / 3;
+    for (let i = 0; i < p.positions.length; i += 1) acc.positions.push(p.positions[i]);
+    for (let i = 0; i < p.colors.length; i += 1) acc.colors.push(p.colors[i]);
+    if (acc.uvs && p.uvs) {
+      for (let i = 0; i < p.uvs.length; i += 1) acc.uvs.push(p.uvs[i]);
+    }
+    for (let i = 0; i < p.indices.length; i += 1) acc.indices.push(p.indices[i] + vertexOffset);
+  }
+
+  return [...bucketed.values()];
 }
