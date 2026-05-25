@@ -3,10 +3,18 @@
 // =============================================================================
 //
 // OSRS textures live at IndexType.TEXTURES, archive 0. Each TextureDefinition
-// references one or more sprite ids in `fileIds`. We use only the first
-// sprite frame for phase 6; multi-sprite animated textures (fire cape,
-// infernal cape — `animationSpeed > 0`) cycle through frames in-game, but
-// we render frame 0 statically.
+// references one sprite id in `fileIds[0]` (in this cache rev — older revs
+// supported multi-sprite flipbook textures, but the rev-233 loader path
+// always reads exactly one sprite id).
+//
+// Animated textures (fire cape, infernal cape, water surfaces, etc.) work
+// by UV scrolling rather than frame cycling: the same sprite is sampled
+// with an offset that moves over time. The TextureDefinition exposes:
+//   - animationSpeed:    scroll speed (0 = static); unit calibrated against
+//                        in-game appearance, see ModelViewer.tsx
+//   - animationDirection: 0-15, a 16-direction wheel; angle = dir * π/8
+//
+// We pass both through unchanged and let the client decide what to do.
 //
 // Sprite pixel data is already decoded by osrscachereader into int32 ARGB
 // (each pixel: 0xAARRGGBB, stored as a signed 32-bit number). We unpack to
@@ -19,6 +27,8 @@ export interface TextureData {
   width: number;
   height: number;
   rgbaBase64: string; // base64 of width * height * 4 bytes (RGBA, row-major, top-left origin)
+  animationSpeed: number;     // 0 = static; >0 = UV scroll (client interprets)
+  animationDirection: number; // 0-15 (16-direction wheel)
 }
 
 export async function extractTexture(cache: any, textureId: number): Promise<TextureData | null> {
@@ -42,5 +52,11 @@ export async function extractTexture(cache: any, textureId: number): Promise<Tex
     rgba[i * 4 + 3] = (p >> 24) & 0xff; // A
   }
 
-  return { width, height, rgbaBase64: rgba.toString('base64') };
+  return {
+    width,
+    height,
+    rgbaBase64: rgba.toString('base64'),
+    animationSpeed: Number(file.def.animationSpeed ?? 0),
+    animationDirection: Number(file.def.animationDirection ?? 0),
+  };
 }

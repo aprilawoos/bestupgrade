@@ -2,6 +2,11 @@
 // Returns the composed geometry of a single OSRS model id. Always wraps
 // the single model in the same ComposedResponse shape used by the player
 // endpoint so the client viewer has one code path.
+//
+// This endpoint has no NPC or item context to look up an animation, so
+// `animations` is always {} and parts have no sourceModelKey — the model
+// renders statically. Use /api/npc/[id] or /api/player/base for animated
+// versions.
 
 import { NextResponse } from 'next/server';
 import { IndexType } from 'osrscachereader';
@@ -35,5 +40,5 @@ export async function GET(
     if (tex) textures[String(p.textureId)] = tex;
   }
 
-  return NextResponse.json({ parts, textures });
+  return NextResponse.json({ parts, textures, animations: {} });
 }

@@ -1,5 +1,5 @@
 // =============================================================================
-// playerComposer.ts — phases 3 + 4 + 5 + 6: kits + items + recolor + textures
+// playerComposer.ts — phases 3-8: kits + items + recolor + textures + animation
 // =============================================================================
 //
 // Builds the player avatar by:
@@ -7,26 +7,50 @@
 //   2. Layering items via wearPos1/2/3 slot rules (phase 4)
 //   3. Applying per-slot recolors (phase 5)
 //   4. Applying per-slot retextures (phase 6)
+//   5. (phase 8) MERGING all per-slot models into one composite, then
+//      animating that composite as a single skinned skeleton.
+//
+// Why merge before animating (phase 8): OSRS animation uses GLOBAL bone-
+// group ids (e.g. id 5 = right shoulder). Each individual model only owns
+// vertexGroups for the body parts it covers — the hands model has no
+// shoulder vertices. Animating per-model means the hands' rotation-pivot
+// computation for "rotate around shoulder" collapses to (0,0,0) because
+// the hands' vertexGroups[5] is empty, so wrists rotate around the world
+// origin and visually detach from the body. The OSRS client avoids this
+// by `mergeWith()`-ing all equipment models into one composite before
+// animating; we now do the same.
 //
 // Output shape (ComposedResponse):
-//   { parts: SubGeometry[], textures: Record<textureId, TextureData> }
+//   { parts: SubGeometry[], textures: ..., animations: ... }
 //
 // Each item / kit can recolor (HSL find→replace) and retexture (textureId
-// find→replace) the models it contributes. Both are non-destructive — the
-// cached model is left untouched.
+// find→replace) the models it contributes. Both are non-destructive —
+// recolors are applied to clones; the cached models are left untouched.
 // =============================================================================
 
 import { IndexType, ConfigType } from 'osrscachereader';
 import type { SubGeometry, ColorPair } from './modelGeometry';
 import { toSubGeometries, mergeParts } from './modelGeometry';
 import { extractTexture, type TextureData } from './textureExtractor';
+import { getAnimationDataForModel, type AnimationData } from './animationExtractor';
 
 export type Gender = 'male' | 'female';
 
 export interface ComposedResponse {
   parts: SubGeometry[];
   textures: Record<string, TextureData>; // keyed by textureId (string for JSON friendliness)
+  animations: Record<string, AnimationData>; // keyed by sourceModelKey
 }
+
+// === Default player idle ===
+// Sequence 808 is the canonical OSRS player default idle (unarmed slack-arms
+// stance). Verified present in our cache rev. Used for EVERY player loadout
+// regardless of equipped weapon — per-weapon idle resolution is deferred
+// (see memory/project_phase8_deferred_per_weapon_idle.md).
+//
+// TODO(per-weapon): resolve via EnumID.WEAPON_STYLES (3908) → struct → param
+// to get the equipped weapon's idle anim, fall back to 808 when missing.
+const PLAYER_DEFAULT_IDLE_ANIM_ID = 808;
 
 const MALE_BODY_PARTS = [0, 1, 2, 3, 4, 5, 6];
 const FEMALE_BODY_PARTS = [7, 8, 9, 10, 11, 12, 13];
@@ -161,27 +185,61 @@ export async function composePlayer(
     }
   }
 
-  // === Step 4: load each model, extract sub-geometries with the slot's
-  // recolors/retextures, accumulate parts ===
-  const allParts: SubGeometry[] = [];
+  // === Step 4: load all source models, clone them, apply per-slot recolors,
+  // and merge into a single composite ModelDefinition ===
+  //
+  // Order matters for `mergeWith`: it concatenates vertex/face arrays in
+  // sequence and offsets indices appropriately. The order we use here
+  // (slot order) doesn't affect rendering or animation correctness — only
+  // the order vertices appear in the final buffer.
+  const sourceModels: Array<{ def: any; remap: RemapPairs }> = [];
   for (const slot of slots) {
     if (!slot) continue;
     const models = await Promise.all(
       slot.modelIds.map((id) => cache.getDef(IndexType.MODELS, id)),
     );
-    for (const m of models) {
-      if (m == null) continue;
-      const parts = toSubGeometries(m, slot.remap.recolors, slot.remap.retextures);
-      for (const p of parts) allParts.push(p);
+    for (const def of models) {
+      if (def == null) continue;
+      sourceModels.push({ def, remap: slot.remap });
     }
   }
 
-  // === Step 5: merge parts by texture id (one render call per material) ===
-  const mergedParts = mergeParts(allParts);
+  if (sourceModels.length === 0) {
+    return { parts: [], textures: {}, animations: {} };
+  }
+
+  // Clone each cached model + apply recolors in place on the clone. The
+  // cache returns shared instances, so without cloning the recolors would
+  // bleed into subsequent requests. Clone the arrays mergeWith mutates
+  // (vertex positions, face indices, vertexGroups) AND the arrays we
+  // mutate during recolor (faceColors, faceTextures).
+  const clones = sourceModels.map(({ def, remap }) => {
+    const c = cloneModelForCompose(def);
+    applyRecolorInPlace(c, remap.recolors);
+    applyRetextureInPlace(c, remap.retextures);
+    return c;
+  });
+
+  // Merge: pick the first clone as the running composite, fold the rest in.
+  // `mergeWith` mutates `this` and returns it. Each call offsets the
+  // otherModel's vertex indices and concatenates everything (including
+  // vertexGroups — bone-id N gets vertices from both models, exactly what
+  // the multi-model skinning needs).
+  const composite = clones[0];
+  for (let i = 1; i < clones.length; i += 1) {
+    composite.mergeWith(clones[i]);
+  }
+
+  // === Step 5: extract sub-geometries from the composite ===
+  // Single sourceModelKey for the whole avatar — animation is one track now.
+  // Recolors/retextures already applied to the composite's faceColors /
+  // faceTextures, so pass empty arrays here.
+  const COMPOSITE_KEY = 'player:composite';
+  const parts = mergeParts(toSubGeometries(composite, [], [], COMPOSITE_KEY));
 
   // === Step 6: extract textures for every referenced textureId ===
   const textureIds = new Set<number>();
-  for (const p of mergedParts) {
+  for (const p of parts) {
     if (typeof p.textureId === 'number') textureIds.add(p.textureId);
   }
   const textures: Record<string, TextureData> = {};
@@ -190,5 +248,78 @@ export async function composePlayer(
     if (tex) textures[String(tid)] = tex;
   }
 
-  return { parts: mergedParts, textures };
+  // === Step 7: animate the composite ===
+  // ONE animation track for the entire merged player. Bone-group transforms
+  // now have access to every body part's vertices, so origins/rotations
+  // line up across slots (hands stay attached to wrists, etc.).
+  const animations: Record<string, AnimationData> = {};
+  const animData = await getAnimationDataForModel(
+    cache,
+    composite,
+    PLAYER_DEFAULT_IDLE_ANIM_ID,
+    -1,
+  );
+  if (animData) animations[COMPOSITE_KEY] = animData;
+
+  return { parts, textures, animations };
+}
+
+// === Composite helpers =====================================================
+// Shallow-clone a ModelDefinition + deep-copy the arrays that the merge or
+// recolor steps mutate. Preserves prototype so methods like `mergeWith` and
+// `loadAnimation` remain callable on the clone.
+function cloneModelForCompose(m: any): any {
+  const c = Object.create(Object.getPrototypeOf(m));
+  Object.assign(c, m);
+  // Arrays mutated by applyRecolor / applyRetexture.
+  if (m.faceColors) c.faceColors = [...m.faceColors];
+  if (m.faceTextures) c.faceTextures = [...m.faceTextures];
+  // Arrays mutated by mergeWith (it does `this.X = [...this.X, ...other.X]`,
+  // so the first model's arrays are read-replaced, not mutated — but we
+  // still clone to avoid edge cases like later faceColor recompute touching
+  // the original).
+  if (m.vertexPositionsX) c.vertexPositionsX = [...m.vertexPositionsX];
+  if (m.vertexPositionsY) c.vertexPositionsY = [...m.vertexPositionsY];
+  if (m.vertexPositionsZ) c.vertexPositionsZ = [...m.vertexPositionsZ];
+  if (m.faceVertexIndices1) c.faceVertexIndices1 = [...m.faceVertexIndices1];
+  if (m.faceVertexIndices2) c.faceVertexIndices2 = [...m.faceVertexIndices2];
+  if (m.faceVertexIndices3) c.faceVertexIndices3 = [...m.faceVertexIndices3];
+  if (m.faceRenderTypes) c.faceRenderTypes = [...m.faceRenderTypes];
+  if (m.faceTextureUCoordinates) {
+    c.faceTextureUCoordinates = m.faceTextureUCoordinates.map((arr: number[]) =>
+      arr ? [...arr] : arr,
+    );
+  }
+  if (m.faceTextureVCoordinates) {
+    c.faceTextureVCoordinates = m.faceTextureVCoordinates.map((arr: number[]) =>
+      arr ? [...arr] : arr,
+    );
+  }
+  // vertexGroups: 2-D array of bone-group → vertex-index lists. mergeWith
+  // builds a new outer array but uses Array.concat on the inner arrays —
+  // safer to clone deep so we don't share references with the cache.
+  if (m.vertexGroups) {
+    c.vertexGroups = m.vertexGroups.map((g: number[]) => (g ? [...g] : g));
+  }
+  return c;
+}
+
+function applyRecolorInPlace(m: any, recolors: ColorPair[]): void {
+  if (!recolors.length || !m.faceColors) return;
+  const map = new Map<number, number>();
+  for (const { find, replace } of recolors) map.set(find, replace);
+  for (let i = 0; i < m.faceColors.length; i += 1) {
+    const r = map.get(m.faceColors[i]);
+    if (r != null) m.faceColors[i] = r;
+  }
+}
+
+function applyRetextureInPlace(m: any, retextures: ColorPair[]): void {
+  if (!retextures.length || !m.faceTextures) return;
+  const map = new Map<number, number>();
+  for (const { find, replace } of retextures) map.set(find, replace);
+  for (let i = 0; i < m.faceTextures.length; i += 1) {
+    const r = map.get(m.faceTextures[i]);
+    if (r != null) m.faceTextures[i] = r;
+  }
 }

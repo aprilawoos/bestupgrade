@@ -31,6 +31,22 @@ export interface SubGeometry {
   uvs?: number[];          // [u,v, ...] — present iff textureId is set
   indices: number[];       // sequential 0..N-1 because vertices aren't shared
   textureId?: number;      // undefined = untextured, render with vertexColors
+
+  // === Skinning back-reference (phase 8) ===
+  // Each output vertex (3 per face) was fanned out from an original-model
+  // vertex. `sourceVertexIndices[i]` is the original-model vertex index for
+  // output vertex i. The client uses this to splat per-frame animated
+  // positions (which are indexed by original-model vertex) into the buffer.
+  // Parallel to `positions` (same length / 3).
+  sourceVertexIndices: number[];
+
+  // === Animation source key (phase 8) ===
+  // Identifies which source model contributed this part. Animation runs per
+  // model (vertexGroups are model-local), so the client needs to know which
+  // animation track to apply. Same value for all output vertices in the part
+  // (merging only combines parts from the SAME model when texture-bucketed).
+  // undefined for static / unanimated parts.
+  sourceModelKey?: string;
 }
 
 export interface ComposedGeometry {
@@ -95,10 +111,14 @@ function makeRemapLookup(pairs?: ColorPair[]): (v: number) => number {
 }
 
 // === Extract one model into one or more SubGeometries ======================
+// `sourceModelKey` (phase 8) tags every produced part so animation playback
+// on the client knows which per-model animation track applies. If omitted,
+// the part is treated as static / unanimated by the client.
 export function toSubGeometries(
   model: OsrsModelDef,
   recolors?: ColorPair[],
   retextures?: ColorPair[],
+  sourceModelKey?: string,
 ): SubGeometry[] {
   const recolor = makeRemapLookup(recolors);
   const retexture = makeRemapLookup(retextures);
@@ -144,6 +164,7 @@ export function toSubGeometries(
     const positions: number[] = new Array(n * 9);
     const indices: number[] = new Array(n * 3);
     const colors: number[] = new Array(n * 9);
+    const sourceVertexIndices: number[] = new Array(n * 3);
     const uvs: number[] | undefined = isTextured ? new Array(n * 6) : undefined;
 
     for (let i = 0; i < n; i += 1) {
@@ -182,13 +203,15 @@ export function toSubGeometries(
           // three.js textures have V=0 at top, OSRS V=0 at bottom — flip V.
           uvs[uvBase + 1] = 1 - (vTri[swappedIdx[k]] ?? 0);
         }
+        sourceVertexIndices[i * 3 + k] = src;
         indices[i * 3 + k] = i * 3 + k;
       }
     }
 
-    const part: SubGeometry = { positions, colors, indices };
+    const part: SubGeometry = { positions, colors, indices, sourceVertexIndices };
     if (uvs) part.uvs = uvs;
     if (isTextured) part.textureId = texId;
+    if (sourceModelKey != null) part.sourceModelKey = sourceModelKey;
     out.push(part);
   }
 
@@ -196,27 +219,38 @@ export function toSubGeometries(
 }
 
 // === Merge: concatenate parts, combining like-textured ones ================
-// Parts with the same textureId (or both untextured) share a single output
-// part — saves draw calls on the client.
+// Parts are bucketed by (textureId, sourceModelKey) — same texture AND same
+// source model. This keeps draw-call savings for the common case (one
+// source model contributes many faces with one texture) without merging
+// vertices from different models into one part. The per-source-model
+// constraint matters for animation (phase 8): each animated part has a
+// single anim track, so all its vertices must come from one model.
 export function mergeParts(allParts: SubGeometry[]): SubGeometry[] {
-  const bucketed = new Map<number, SubGeometry>(); // texId or -1 → merged part
+  const bucketed = new Map<string, SubGeometry>(); // "texId|modelKey" → merged part
 
   for (const p of allParts) {
-    const key = p.textureId ?? -1;
+    const texPart = p.textureId ?? -1;
+    const modelPart = p.sourceModelKey ?? '';
+    const key = `${texPart}|${modelPart}`;
     let acc = bucketed.get(key);
     if (!acc) {
       acc = {
         positions: [],
         colors: [],
         indices: [],
+        sourceVertexIndices: [],
         ...(p.uvs ? { uvs: [] } : {}),
         ...(p.textureId != null ? { textureId: p.textureId } : {}),
+        ...(p.sourceModelKey != null ? { sourceModelKey: p.sourceModelKey } : {}),
       };
       bucketed.set(key, acc);
     }
     const vertexOffset = acc.positions.length / 3;
     for (let i = 0; i < p.positions.length; i += 1) acc.positions.push(p.positions[i]);
     for (let i = 0; i < p.colors.length; i += 1) acc.colors.push(p.colors[i]);
+    for (let i = 0; i < p.sourceVertexIndices.length; i += 1) {
+      acc.sourceVertexIndices.push(p.sourceVertexIndices[i]);
+    }
     if (acc.uvs && p.uvs) {
       for (let i = 0; i < p.uvs.length; i += 1) acc.uvs.push(p.uvs[i]);
     }
