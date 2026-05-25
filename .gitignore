@@ -18,6 +18,9 @@ coverage
 # downloaded OSRS cache (fetched via scripts/fetch-cache.mjs; large, not redistributable)
 cache
 
+# local wiki-research scratch (re-runnable via the generators)
+.scratch
+
 # misc
 *.local
 .DS_Store
