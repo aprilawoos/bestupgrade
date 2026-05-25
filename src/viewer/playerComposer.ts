@@ -33,6 +33,7 @@ import type { SubGeometry, ColorPair } from './modelGeometry';
 import { toSubGeometries, mergeParts } from './modelGeometry';
 import { extractTexture, type TextureData } from './textureExtractor';
 import { getAnimationDataForModel, type AnimationData } from './animationExtractor';
+import { resolveIdleAnimId } from './weaponIdleAnims';
 
 export type Gender = 'male' | 'female';
 
@@ -41,16 +42,6 @@ export interface ComposedResponse {
   textures: Record<string, TextureData>; // keyed by textureId (string for JSON friendliness)
   animations: Record<string, AnimationData>; // keyed by sourceModelKey
 }
-
-// === Default player idle ===
-// Sequence 808 is the canonical OSRS player default idle (unarmed slack-arms
-// stance). Verified present in our cache rev. Used for EVERY player loadout
-// regardless of equipped weapon — per-weapon idle resolution is deferred
-// (see memory/project_phase8_deferred_per_weapon_idle.md).
-//
-// TODO(per-weapon): resolve via EnumID.WEAPON_STYLES (3908) → struct → param
-// to get the equipped weapon's idle anim, fall back to 808 when missing.
-const PLAYER_DEFAULT_IDLE_ANIM_ID = 808;
 
 const MALE_BODY_PARTS = [0, 1, 2, 3, 4, 5, 6];
 const FEMALE_BODY_PARTS = [7, 8, 9, 10, 11, 12, 13];
@@ -162,6 +153,9 @@ export async function composePlayer(
   // Each item: place at wearPos1 (overwriting any kit), clear wearPos2 and
   // wearPos3 (their kits become hidden). Ring (wearPos1=13) and ammo
   // (wearPos1=14) are >= NUM_SLOTS; silently skipped — they're invisible.
+  // Track the equipped weapon's item id so step 7 can resolve its idle pose.
+  const WEAPON_SLOT = 3;
+  let equippedWeaponId: number | null = null;
   const items: ItemDef[] = await Promise.all(itemIds.map((id) => cache.getItem(id)));
   for (const item of items) {
     if (!item || typeof item.wearPos1 !== 'number') continue;
@@ -176,6 +170,8 @@ export async function composePlayer(
     if (typeof m2 === 'number' && m2 >= 0) modelIds.push(m2);
 
     slots[item.wearPos1] = { kind: 'item', modelIds, remap: extractRemap(item) };
+
+    if (item.wearPos1 === WEAPON_SLOT) equippedWeaponId = item.id;
 
     if (typeof item.wearPos2 === 'number' && item.wearPos2 >= 0 && item.wearPos2 < NUM_SLOTS) {
       slots[item.wearPos2] = null;
@@ -252,11 +248,17 @@ export async function composePlayer(
   // ONE animation track for the entire merged player. Bone-group transforms
   // now have access to every body part's vertices, so origins/rotations
   // line up across slots (hands stay attached to wrists, etc.).
+  //
+  // Idle anim resolution: look up the equipped weapon in the vendored
+  // weapon-animation-replacer table. Unmapped weapons (and no weapon at
+  // all) fall back to 808 (HUMAN_READY) — same behaviour as a live OSRS
+  // server for unmapped items.
+  const idleAnimId = resolveIdleAnimId(equippedWeaponId);
   const animations: Record<string, AnimationData> = {};
   const animData = await getAnimationDataForModel(
     cache,
     composite,
-    PLAYER_DEFAULT_IDLE_ANIM_ID,
+    idleAnimId,
     -1,
   );
   if (animData) animations[COMPOSITE_KEY] = animData;

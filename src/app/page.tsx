@@ -46,12 +46,22 @@ function pickRandom<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+// Phase 8 spot-check: pin the cape + weapon slots so every roll exercises
+// the per-weapon idle (AGS = anim 7053, over-shoulder pose) and the UV-
+// scroll path (fire cape, anim direction 1, animationSpeed 2).
+const PINNED_CAPE_ID = 6570;   // Fire cape
+const PINNED_WEAPON_ID = 11802; // Armadyl godsword
+
 function randomLoadout(): PlayerEquipment {
   const loadout = {} as PlayerEquipment;
   for (const slot of SLOTS) {
     const candidates = availableEquipment.filter((e) => e.slot === slot);
     loadout[slot] = candidates.length > 0 ? pickRandom(candidates) : null;
   }
+  const pinnedCape = availableEquipment.find((e) => e.id === PINNED_CAPE_ID);
+  if (pinnedCape) loadout.cape = pinnedCape;
+  const pinnedWeapon = availableEquipment.find((e) => e.id === PINNED_WEAPON_ID);
+  if (pinnedWeapon) loadout.weapon = pinnedWeapon;
   return loadout;
 }
 
