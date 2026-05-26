@@ -148,6 +148,21 @@ function StyleCard({ result }: { result: SimResult }) {
 type StatsPreset = 'L1' | 'L99' | 'lookup';
 const QP_PSEUDO_UNLOCK = '32+ Quest Points (Champions’ Guild)';
 
+// Short human-readable summary of a boss's access reqs (used in the
+// "locked" chip tooltip). Returns e.g. "slayer 85, on slayer task" or
+// "Dragon Slayer II completed".
+function describeBossReqs(boss: string): string {
+  const req = BOSS_REQS[boss];
+  if (!req) return 'no reqs';
+  const parts: string[] = [];
+  if (req.skills) {
+    for (const [s, lvl] of Object.entries(req.skills)) parts.push(`${s} ${lvl}`);
+  }
+  if (req.questsCompleted?.length) parts.push(`needs ${req.questsCompleted.join(', ')}`);
+  if (req.questsStarted?.length) parts.push(`needs started ${req.questsStarted.join(', ')}`);
+  return parts.join(', ') || 'no reqs';
+}
+
 function buildProgressionFromQuests(
   stats: StatsPreset,
   completed: ReadonlySet<string>,
@@ -324,6 +339,102 @@ export default function CrabSim() {
       completedQuests,
     );
   }, [currentAllSkills, completedQuests]);
+  const killableSet = useMemo(() => new Set(killable), [killable]);
+  const allBossNames = useMemo(
+    () => Object.keys(BOSS_REQS).sort((a, b) => a.localeCompare(b)),
+    [],
+  );
+
+  // Boss-panel state — mirrors the quest panel pattern (Available / Killed,
+  // drag-drop, click-to-toggle, auto-mark + clear buttons). Unkillable
+  // bosses appear in Available styled red and are not draggable. Bosses in
+  // Killed stay there regardless of current stats (manual mark sticks).
+  const [killedBosses, setKilledBosses] = useState<Set<string>>(new Set());
+
+  const moveBoss = (boss: string, dropTo: 'available' | 'killed') => {
+    setKilledBosses((prev) => {
+      const next = new Set(prev);
+      if (dropTo === 'killed') next.add(boss);
+      else next.delete(boss);
+      return next;
+    });
+  };
+
+  const autoMarkKillable = () => {
+    setKilledBosses((prev) => new Set([...prev, ...killable]));
+  };
+
+  const onDragStartBoss = (boss: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', boss);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  const onDropToBossPanel = (target: 'available' | 'killed') => (e: React.DragEvent) => {
+    e.preventDefault();
+    const boss = e.dataTransfer.getData('text/plain');
+    // Only allow killable bosses to be moved into Killed; any drag back to
+    // Available is fine (manual unmark).
+    if (!boss) return;
+    if (target === 'killed' && !killableSet.has(boss)) return;
+    moveBoss(boss, target);
+  };
+
+  const bossAvailable = allBossNames.filter((b) => !killedBosses.has(b));
+  const bossKilled = [...killedBosses].sort((a, b) => a.localeCompare(b));
+
+  const bossChip = (boss: string, source: 'available' | 'killed') => {
+    const onTask = BOSS_REQS[boss]?.onSlayerTask;
+    const isKillable = killableSet.has(boss);
+    // In Available, unkillable bosses are red + undraggable + unclickable.
+    // In Killed, every chip is draggable/clickable back to Available.
+    const locked = source === 'available' && !isKillable;
+    return (
+      <div
+        key={boss}
+        draggable={!locked}
+        onDragStart={locked ? undefined : onDragStartBoss(boss)}
+        onClick={locked ? undefined : () => moveBoss(boss, source === 'available' ? 'killed' : 'available')}
+        style={{
+          padding: '0.35rem 0.6rem',
+          marginBottom: '0.25rem',
+          border: '1px solid ' + (locked ? '#7a2a2a' : (source === 'killed' ? '#5a8fc5' : '#444')),
+          background: locked ? '#3a1a1a' : (source === 'killed' ? '#1f3a5a' : '#1a1a1a'),
+          color: locked ? '#e6a0a0' : (source === 'killed' ? '#cce0f5' : '#bbb'),
+          borderRadius: 4,
+          fontSize: '0.8rem',
+          cursor: locked ? 'not-allowed' : 'grab',
+          userSelect: 'none',
+          opacity: locked ? 0.7 : 1,
+        }}
+        title={
+          locked
+            ? `Locked — does not meet reqs (${describeBossReqs(boss)})`
+            : (onTask ? 'Slayer-task locked but reachable — drag or click to toggle' : 'Drag between panels, or click to toggle')
+        }
+      >{boss}{onTask ? ' (task)' : ''}</div>
+    );
+  };
+
+  const bossPanel = (title: string, items: string[], target: 'available' | 'killed') => (
+    <div
+      onDragOver={onDragOverPanel}
+      onDrop={onDropToBossPanel(target)}
+      style={{
+        flex: 1,
+        minWidth: 220,
+        border: '1px dashed #333',
+        borderRadius: 6,
+        padding: '0.6rem',
+        background: '#101010',
+      }}
+    >
+      <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#aaa' }}>
+        {title} <span style={{ color: '#666' }}>({items.length})</span>
+      </h3>
+      {items.length === 0
+        ? <p style={{ color: '#555', fontSize: '0.75rem', fontStyle: 'italic', margin: 0 }}>drop bosses here</p>
+        : items.map((b) => bossChip(b, target))}
+    </div>
+  );
 
   const totalCombos = (results.melee?.combosEvaluated ?? 0)
     + (results.ranged?.combosEvaluated ?? 0)
@@ -497,39 +608,47 @@ export default function CrabSim() {
         {panel('Unlocked', unlocked, 'unlocked')}
       </section>
 
-      <section style={{ marginTop: '0.75rem', border: '1px dashed #333', borderRadius: 6, padding: '0.6rem', background: '#101010' }}>
-        <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#aaa' }}>
-          Killable bosses <span style={{ color: '#666' }}>({killable.length} of {Object.keys(BOSS_REQS).length})</span>
-        </h3>
-        <p style={{ color: '#555', fontSize: '0.7rem', fontStyle: 'italic', margin: '0 0 0.5rem' }}>
-          Filtered by current stats + completed quests. Slayer-task-gated bosses are included (player can always go get the task).
-        </p>
-        {killable.length === 0
-          ? <p style={{ color: '#555', fontSize: '0.75rem', fontStyle: 'italic', margin: 0 }}>none killable at current progression</p>
-          : (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-              {killable.map((b) => {
-                const req = BOSS_REQS[b];
-                const onTask = req?.onSlayerTask;
-                return (
-                  <span
-                    key={b}
-                    title={onTask ? 'slayer-task locked' : ''}
-                    style={{
-                      padding: '0.25rem 0.5rem',
-                      background: onTask ? '#3a2a4a' : '#1f3a5a',
-                      color: onTask ? '#dccef5' : '#cce0f5',
-                      border: '1px solid ' + (onTask ? '#5a4a7a' : '#3a5a8a'),
-                      borderRadius: 4,
-                      fontSize: '0.75rem',
-                    }}
-                  >
-                    {b}{onTask ? ' (task)' : ''}
-                  </span>
-                );
-              })}
-            </div>
-          )}
+      <section style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          onClick={autoMarkKillable}
+          disabled={running}
+          style={{
+            padding: '0.4rem 0.9rem',
+            fontSize: '0.85rem',
+            cursor: running ? 'default' : 'pointer',
+            background: '#2a4a3a',
+            color: '#cce6d4',
+            border: '1px solid #3a6a4a',
+            borderRadius: 4,
+          }}
+          title="Mark every currently-killable boss as Killed. Locked bosses (red) are skipped."
+        >
+          Auto-mark killable bosses
+        </button>
+        <button
+          onClick={() => setKilledBosses(new Set())}
+          disabled={running}
+          style={{
+            padding: '0.4rem 0.9rem',
+            fontSize: '0.85rem',
+            cursor: running ? 'default' : 'pointer',
+            background: '#3a2a2a',
+            color: '#e6cccc',
+            border: '1px solid #6a3a3a',
+            borderRadius: 4,
+          }}
+          title="Move every killed boss back to Available"
+        >
+          Clear killed
+        </button>
+        <span style={{ color: '#666', fontSize: '0.8rem' }}>
+          ({killable.length} killable · {Object.keys(BOSS_REQS).length - killable.length} locked by reqs)
+        </span>
+      </section>
+
+      <section style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {bossPanel('Available bosses', bossAvailable, 'available')}
+        {bossPanel('Killed', bossKilled, 'killed')}
       </section>
 
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginTop: '1.25rem' }}>
