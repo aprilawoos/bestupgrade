@@ -1,12 +1,8 @@
 // ============================================================================
-// Generator: reads `.scratch/vendor_starter.json` (wiki research output) and
-// emits `src/lib/vendorStarter.ts` with the typed dataset.
-//
-// Criteria for inclusion (validated upstream during the wiki research):
-//   - Shop has NO entry requirement (no quest gate, no skill gate, no minigame).
-//   - Item has NO requirement to wield (no skill/quest req listed on wiki).
-//   - Item passes `isCombatViable` from src/lib/equipmentFilter.ts (cuts
-//     skirts, capes-with-zero-stats, eye patches, joke aprons).
+// Generator: reads .scratch/vendor_starter.json (wiki-researched shop pool
+// including stat-gated guild shops + items with stat reqs to wield) and
+// emits src/lib/vendorStarter.ts with item id, slot, per-shop pricing,
+// wield-skill requirements, and per-shop access requirements.
 //
 // Re-run: `npx jest VendorStarterGen`.
 // ============================================================================
@@ -21,47 +17,47 @@ import eqJson from '../../cdn/json/equipment.json';
 const equipment = eqJson as EquipmentPiece[];
 
 // =====
-// Item-name fixups: wiki-name → (equipment.json name, version)
-// Two cases where the wiki name doesn't drop straight into the dump.
+// Wiki-name -> equipment.json (name, version) fixups
 // =====
-const NAME_FIX: Record<string, { name: string; version?: string }> = {
-  'Priest gown|bottom': { name: 'Priest gown (bottom)', version: '' },
+const NAME_FIX: Record<string, { name: string; version: string }> = {
   'Priest gown|top': { name: 'Priest gown (top)', version: '' },
+  'Priest gown|bottom': { name: 'Priest gown (bottom)', version: '' },
 };
 
-// =====
-// Items where the wiki name maps to multiple version variants in the dump
-// (e.g. poisoned vs unpoisoned). We always want the canonical/unpoisoned
-// "raw from vendor" variant.
-// =====
-const PREFERRED_VERSION_FOR: Record<string, string> = {
-  'Bronze dagger': 'Unpoisoned',
-  'Iron dagger': 'Unpoisoned',
-  'Bronze arrow': 'Unpoisoned',
+// Items whose canonical entry uses a non-empty version (poison variants etc).
+// findEq prefers this version when wikiVersion is unspecified.
+const PREFERRED_VERSION: Record<string, string> = {
+  'Bronze dagger': 'Unpoisoned', 'Iron dagger': 'Unpoisoned',
+  'Steel dagger': 'Unpoisoned', 'Black dagger': 'Unpoisoned',
+  'Mithril dagger': 'Unpoisoned', 'Adamant dagger': 'Unpoisoned',
+  'Bronze arrow': 'Unpoisoned', 'Iron arrow': 'Unpoisoned',
+  'Steel arrow': 'Unpoisoned', 'Mithril arrow': 'Unpoisoned',
+  'Adamant arrow': 'Unpoisoned', 'Rune arrow': 'Unpoisoned',
   'Bronze bolts': 'Unpoisoned',
+  'Bronze javelin': 'Unpoisoned', 'Iron javelin': 'Unpoisoned',
+  'Steel javelin': 'Unpoisoned', 'Mithril javelin': 'Unpoisoned',
+  'Adamant javelin': 'Unpoisoned', 'Rune javelin': 'Unpoisoned',
+  'Bronze thrownaxe': 'Unpoisoned', 'Iron thrownaxe': 'Unpoisoned',
+  'Steel thrownaxe': 'Unpoisoned', 'Mithril thrownaxe': 'Unpoisoned',
+  'Adamant thrownaxe': 'Unpoisoned', 'Rune thrownaxe': 'Unpoisoned',
 };
 
-function findEquip(name: string, version: string): EquipmentPiece | null {
+function findEq(name: string, version: string): EquipmentPiece | null {
   const fixed = NAME_FIX[`${name}|${version}`];
   if (fixed) {
-    const hit = equipment.find((e) => e.name === fixed.name && e.version === (fixed.version ?? ''));
-    return hit ?? null;
+    return equipment.find((e) => e.name === fixed.name && e.version === fixed.version) ?? null;
   }
-  // explicit version match
   if (version) {
     const hit = equipment.find((e) => e.name === name && e.version === version);
     if (hit) return hit;
   }
-  // preferred-version fallback
-  const preferred = PREFERRED_VERSION_FOR[name];
+  const preferred = PREFERRED_VERSION[name];
   if (preferred) {
     const hit = equipment.find((e) => e.name === name && e.version === preferred);
     if (hit) return hit;
   }
-  // empty-version canonical
   const canonical = equipment.find((e) => e.name === name && e.version === '');
   if (canonical) return canonical;
-  // any version
   return equipment.find((e) => e.name === name) ?? null;
 }
 
@@ -73,50 +69,95 @@ interface RawShopItem {
   wikiVersion: string;
   basePrice: number;
   stockBase: number;
+  requirements?: Record<string, number>;
+}
+interface RawShopAccess {
+  // Skill level reqs (any PlayerSkills key, or 'combatTotal')
+  [skillOrCombatTotal: string]: number | string[] | undefined;
+  // Quest progression reqs:
+  questPoints?: number;
+  questsStarted?: string[];
+  questsCompleted?: string[];
 }
 interface RawShop {
   shop: string;
   shopLocation: string;
+  accessNote?: string;
+  shopAccess?: RawShopAccess;
   items: RawShopItem[];
 }
 
 // =====
-// Output shape
+// Output shape (mirrored in src/lib/vendorStarter.ts header below)
 // =====
+interface VendorItemShop {
+  shop: string;
+  location: string;
+  basePrice: number;
+  stockBase: number;
+  shopAccess: RawShopAccess;
+}
 interface VendorItem {
   itemId: number;
   name: string;
   version: string;
   slot: EquipmentPiece['slot'];
-  shops: { shop: string; location: string; basePrice: number; stockBase: number }[];
+  requirements: Record<string, number>;
+  shops: VendorItemShop[];
 }
 
 function emit(items: VendorItem[]): string {
-  const slotOrder = ['head','cape','neck','ammo','weapon','body','shield','legs','hands','feet','ring'];
+  const slotOrder = ['head', 'cape', 'neck', 'ammo', 'weapon', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'];
   items.sort((a, b) => {
     const da = slotOrder.indexOf(a.slot) - slotOrder.indexOf(b.slot);
     if (da !== 0) return da;
     return a.name.localeCompare(b.name);
   });
 
-  const header = `// AUTO-GENERATED by src/tests/VendorStarterGen.test.ts — do not edit by hand.
+  const header = `// AUTO-GENERATED by src/tests/VendorStarterGen.test.ts -- do not edit by hand.
 // Source data:
-//   - .scratch/vendor_starter.json (wiki-researched shop inventories, no-req only)
+//   - .scratch/vendor_starter.json (wiki-researched no-quest shop pool,
+//     includes stat-gated guild shops; items may have wield-skill reqs)
 //   - Validated against cdn/json/equipment.json (item IDs canonical)
 //   - Filtered through isCombatViable (src/lib/equipmentFilter.ts)
 //
 // Inclusion criteria:
-//   - Shop: no quest/skill/minigame requirement to enter or trade
-//   - Item: no wield/wear requirement (any req at all disqualifies)
-//   - Item must have at least one positive combat stat (or be in noStatExceptions)
-//
-// Use this as the "worst-in-slot" starting baseline for ironman gear-progression.
+//   - Shop has NO quest req. Stat req to enter is OK (recorded in shopAccess).
+//   - Item may have stat reqs to wield (recorded in requirements). NO quest
+//     reqs to wield.
+//   - Item must pass isCombatViable.
+
+export interface VendorShopAccess {
+  // Skill-level reqs (any PlayerSkills key — atk/str/def/ranged/magic/prayer/
+  // mining/herblore/...) OR 'combatTotal' (atk+str sum for Warriors' Guild).
+  // All listed skills must be met.
+  [skillOrCombatTotal: string]: number | string[] | undefined;
+  /**
+   * Total quest points required (Champions' Guild = 32, etc.).
+   */
+  questPoints?: number;
+  /**
+   * Quests that must be at least STARTED. e.g. The Giant Dwarf for Keldagrim
+   * — talking to the boatman / mining a coal truck opens the city, you do
+   * NOT have to complete the quest.
+   */
+  questsStarted?: string[];
+  /**
+   * Quests that must be COMPLETED. e.g. Dragon Slayer I for Oziach.
+   */
+  questsCompleted?: string[];
+}
 
 export interface VendorItemShop {
   shop: string;
   location: string;
   basePrice: number;
   stockBase: number;
+  /**
+   * Reqs to ENTER this shop. Empty = walk-up. The player must meet every
+   * field. Use src/lib/vendorAccess.ts:meetsShopAccess to check.
+   */
+  shopAccess: VendorShopAccess;
 }
 
 export interface VendorItem {
@@ -124,6 +165,11 @@ export interface VendorItem {
   name: string;
   version: string;
   slot: 'head' | 'cape' | 'neck' | 'ammo' | 'weapon' | 'body' | 'shield' | 'legs' | 'hands' | 'feet' | 'ring';
+  /**
+   * Skill levels needed to WIELD/WEAR the item.
+   * Empty object = no req.
+   */
+  requirements: Record<string, number>;
   shops: VendorItemShop[];
 }
 `;
@@ -140,13 +186,21 @@ describe('VendorStarterGen', () => {
       ),
     ) as RawShop[];
 
-    // Resolve every (shop, item) row, then group by canonical item id.
     const byId = new Map<number, VendorItem>();
     const dropped: { name: string; version: string; reason: string }[] = [];
 
     for (const shop of raw) {
+      const shopAccess = shop.shopAccess ?? {};
       for (const it of shop.items) {
-        const piece = findEquip(it.name, it.wikiVersion);
+        if (it.stockBase <= 0) {
+          // Shop entries with zero base stock are player-sale-only (Davon's,
+          // out-of-print Quality Armour entries, etc.). The shop will buy the
+          // item from players but doesn't restock for purchase — so it's not
+          // a real source for an ironman pool.
+          dropped.push({ name: it.name, version: it.wikiVersion, reason: `shop ${shop.shop} has 0 base stock` });
+          continue;
+        }
+        const piece = findEq(it.name, it.wikiVersion);
         if (!piece) {
           dropped.push({ name: it.name, version: it.wikiVersion, reason: 'no equipment.json match' });
           continue;
@@ -162,36 +216,47 @@ describe('VendorStarterGen', () => {
             name: piece.name,
             version: piece.version,
             slot: piece.slot,
+            requirements: it.requirements ?? {},
             shops: [],
           };
           byId.set(piece.id, entry);
+        } else {
+          // If multiple shops list the same item with different stated reqs
+          // (shouldn't happen often), take the most permissive — lowest each.
+          for (const [k, v] of Object.entries(it.requirements ?? {})) {
+            const existing = entry.requirements[k];
+            if (existing === undefined || v < existing) entry.requirements[k] = v;
+          }
         }
         entry.shops.push({
           shop: shop.shop,
           location: shop.shopLocation,
           basePrice: it.basePrice,
           stockBase: it.stockBase,
+          shopAccess,
         });
       }
     }
 
-    const items = [...byId.values()];
+    // Drop items that ended up with zero shops (every shop had stockBase=0).
+    const items = [...byId.values()].filter((v) => v.shops.length > 0);
     const ts = emit(items);
     const outPath = path.resolve(__dirname, '../lib/vendorStarter.ts');
     fs.writeFileSync(outPath, ts, 'utf8');
-    // eslint-disable-next-line no-console
-    console.log(`\nWrote ${outPath} — ${items.length} unique items`);
+    /* eslint-disable no-console */
+    console.log(`\nWrote ${outPath} -- ${items.length} unique items`);
     if (dropped.length) {
-      // eslint-disable-next-line no-console
-      console.log(`Dropped ${dropped.length} (${[...new Set(dropped.map((d) => d.name + (d.version ? ' (' + d.version + ')' : '')))].length} unique):`);
-      const seen = new Set<string>();
-      dropped.forEach((d) => {
+      const uniq = new Set<string>();
+      const lines: string[] = [];
+      for (const d of dropped) {
         const k = d.name + '|' + d.version;
-        if (seen.has(k)) return;
-        seen.add(k);
-        // eslint-disable-next-line no-console
-        console.log(`  - ${d.name}${d.version ? ' (' + d.version + ')' : ''}: ${d.reason}`);
-      });
+        if (uniq.has(k)) continue;
+        uniq.add(k);
+        lines.push(`  - ${d.name}${d.version ? ' (' + d.version + ')' : ''}: ${d.reason}`);
+      }
+      console.log(`Dropped ${dropped.length} entries (${uniq.size} unique):`);
+      lines.forEach((l) => console.log(l));
     }
+    /* eslint-enable no-console */
   });
 });
