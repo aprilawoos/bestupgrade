@@ -13,6 +13,8 @@ import { simulateBestLoadout, SimResult, SimStyle } from '@/lib/loadoutSim';
 import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
 import { AllSkills, autocompletableQuests } from '@/lib/questRequirements';
 import { BOSS_REQS, killableBosses } from '@/lib/bossRequirements';
+import { BossProgression, getPlayerBossDropPool } from '@/lib/bossAccess';
+import type { EquipmentPiece } from '@/types/Player';
 import { ModelViewer } from '@/viewer/ModelViewer';
 import type { Monster } from '@/types/Monster';
 import type { PlayerSkills } from '@/types/Player';
@@ -194,6 +196,7 @@ export default function CrabSim() {
 
   const [stats, setStats] = useState<StatsPreset>('L1');
   const [completedQuests, setCompletedQuests] = useState<Set<string>>(new Set());
+  const [killedBosses, setKilledBosses] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<ResultsByStyle>(EMPTY_RESULTS);
   const [poolSize, setPoolSize] = useState<number>(0);
   const [running, setRunning] = useState(false);
@@ -212,6 +215,7 @@ export default function CrabSim() {
     nextStats: StatsPreset,
     nextQuests: ReadonlySet<string>,
     skillsOverride?: Partial<PlayerSkills> | null,
+    nextKilled?: ReadonlySet<string>,
   ) => {
     setRunning(true);
     setError(null);
@@ -222,7 +226,36 @@ export default function CrabSim() {
           nextQuests,
           skillsOverride !== undefined ? skillsOverride : lookupSkills,
         );
-        const pool = getPlayerAccessiblePool(progression);
+        const vendorPool = getPlayerAccessiblePool(progression);
+
+        // Boss-drop pool from killed bosses. getPlayerBossDropPool walks the
+        // boss-drop graph transitively (Brimstone ring requires all 3 Hydra
+        // components, Voidwaker requires hilt+blade+gem, etc.) — so a drop
+        // only enters the pool if the player can both wield it AND obtain
+        // every required component from a boss they've killed.
+        //
+        // BossProgression's slayerLevel and isOnTaskFor are only consumed by
+        // canKillBoss() which getPlayerBossDropPool does NOT call (it
+        // already trusts the killedBosses set as the access decision). Stub
+        // values are safe here.
+        const killed = nextKilled ?? killedBosses;
+        const bossProgression: BossProgression = {
+          skills: progression.skills,
+          questsStarted: progression.questsStarted,
+          questsCompleted: progression.questsCompleted,
+          slayerLevel: (progression.skills as { slayer?: number }).slayer ?? 1,
+          isOnTaskFor: () => true,
+        };
+        const bossPool = getPlayerBossDropPool(bossProgression, killed);
+
+        // Merge vendor + boss pools, dedupe by item id (boss drops sometimes
+        // overlap shop items — e.g. dragon dagger, dragon pickaxe).
+        const seen = new Set<number>(vendorPool.map((p) => p.id));
+        const pool: EquipmentPiece[] = [...vendorPool];
+        for (const item of bossPool) {
+          if (!seen.has(item.id)) { pool.push(item); seen.add(item.id); }
+        }
+
         setPoolSize(pool.length);
         const next: ResultsByStyle = { melee: null, ranged: null, magic: null };
         for (const style of ['melee', 'ranged', 'magic'] as SimStyle[]) {
@@ -235,7 +268,7 @@ export default function CrabSim() {
         setRunning(false);
       }
     }, 0);
-  }, [monster, lookupSkills]);
+  }, [monster, lookupSkills, killedBosses]);
 
   const setStatsAndRun = (s: StatsPreset) => { setStats(s); runSim(s, completedQuests); };
 
@@ -345,23 +378,31 @@ export default function CrabSim() {
     [],
   );
 
-  // Boss-panel state — mirrors the quest panel pattern (Available / Killed,
-  // drag-drop, click-to-toggle, auto-mark + clear buttons). Unkillable
-  // bosses appear in Available styled red and are not draggable. Bosses in
-  // Killed stay there regardless of current stats (manual mark sticks).
-  const [killedBosses, setKilledBosses] = useState<Set<string>>(new Set());
-
+  // Boss-panel handlers — mirror the quest panel (drag-drop, click-toggle,
+  // auto-mark, clear). Each handler re-runs the sim with the new killed set
+  // so the loadout pool refreshes immediately. (killedBosses state itself
+  // lives with the other useState calls above so runSim can close over it.)
   const moveBoss = (boss: string, dropTo: 'available' | 'killed') => {
     setKilledBosses((prev) => {
       const next = new Set(prev);
       if (dropTo === 'killed') next.add(boss);
       else next.delete(boss);
+      runSim(stats, completedQuests, undefined, next);
       return next;
     });
   };
 
   const autoMarkKillable = () => {
-    setKilledBosses((prev) => new Set([...prev, ...killable]));
+    setKilledBosses((prev) => {
+      const next = new Set([...prev, ...killable]);
+      runSim(stats, completedQuests, undefined, next);
+      return next;
+    });
+  };
+
+  const clearKilled = () => {
+    setKilledBosses(new Set());
+    runSim(stats, completedQuests, undefined, new Set());
   };
 
   const onDragStartBoss = (boss: string) => (e: React.DragEvent) => {
@@ -626,7 +667,7 @@ export default function CrabSim() {
           Auto-mark killable bosses
         </button>
         <button
-          onClick={() => setKilledBosses(new Set())}
+          onClick={clearKilled}
           disabled={running}
           style={{
             padding: '0.4rem 0.9rem',
