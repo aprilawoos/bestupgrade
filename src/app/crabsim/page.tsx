@@ -270,7 +270,11 @@ export default function CrabSim() {
     }, 0);
   }, [monster, lookupSkills, killedBosses]);
 
-  const setStatsAndRun = (s: StatsPreset) => { setStats(s); runSim(s, completedQuests); };
+  // Run the sim with the current state. Single entry point — every other
+  // handler just mutates state silently and the user clicks Run when ready.
+  const runWithCurrent = useCallback(() => {
+    runSim(stats, completedQuests, undefined, killedBosses);
+  }, [runSim, stats, completedQuests, killedBosses]);
 
   // Fetch a player's hiscores via the proxy and, on success, switch to the
   // 'lookup' stats preset using the returned skill levels.
@@ -296,13 +300,12 @@ export default function CrabSim() {
       setLookupAllSkills(body.allSkills ?? null);
       setLookupDisplay(body.name ?? name);
       setStats('lookup');
-      runSim('lookup', completedQuests, skills);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setLookupBusy(false);
     }
-  }, [lookupName, completedQuests, runSim]);
+  }, [lookupName]);
 
   // Build an AllSkills view for the current stats preset — used by the
   // "auto-complete completable" button to check quest stat requirements.
@@ -324,7 +327,6 @@ export default function CrabSim() {
     // dragged in manually, or the QP pseudo-unlock).
     const merged = new Set([...completedQuests, ...completable]);
     setCompletedQuests(merged);
-    runSim(stats, merged);
   };
 
   // Toggle one quest in/out of the completed set; also accepts a direct
@@ -334,7 +336,6 @@ export default function CrabSim() {
       const next = new Set(prev);
       if (dropTo === 'unlocked') next.add(quest);
       else next.delete(quest);
-      runSim(stats, next);
       return next;
     });
   };
@@ -379,30 +380,22 @@ export default function CrabSim() {
   );
 
   // Boss-panel handlers — mirror the quest panel (drag-drop, click-toggle,
-  // auto-mark, clear). Each handler re-runs the sim with the new killed set
-  // so the loadout pool refreshes immediately. (killedBosses state itself
-  // lives with the other useState calls above so runSim can close over it.)
+  // auto-mark, clear). Silent state updates; the user clicks Run to apply.
   const moveBoss = (boss: string, dropTo: 'available' | 'killed') => {
     setKilledBosses((prev) => {
       const next = new Set(prev);
       if (dropTo === 'killed') next.add(boss);
       else next.delete(boss);
-      runSim(stats, completedQuests, undefined, next);
       return next;
     });
   };
 
   const autoMarkKillable = () => {
-    setKilledBosses((prev) => {
-      const next = new Set([...prev, ...killable]);
-      runSim(stats, completedQuests, undefined, next);
-      return next;
-    });
+    setKilledBosses((prev) => new Set([...prev, ...killable]));
   };
 
   const clearKilled = () => {
     setKilledBosses(new Set());
-    runSim(stats, completedQuests, undefined, new Set());
   };
 
   const onDragStartBoss = (boss: string) => (e: React.DragEvent) => {
@@ -556,7 +549,7 @@ export default function CrabSim() {
       <section style={{ marginTop: '1rem', display: 'flex', gap: '2rem', flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <span style={{ color: '#888', fontSize: '0.9rem' }}>Stats:</span>
-          {statsButton(stats === 'L1', 'Level 1', () => setStatsAndRun('L1'))}
+          {statsButton(stats === 'L1', 'Level 1', () => setStats('L1'))}
           <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
             <input
               type="text"
@@ -592,14 +585,29 @@ export default function CrabSim() {
               {lookupBusy ? 'Looking up…' : 'Lookup player'}
             </button>
           </div>
-          {statsButton(stats === 'L99', 'Level 99', () => setStatsAndRun('L99'))}
+          {statsButton(stats === 'L99', 'Level 99', () => setStats('L99'))}
         </div>
+        <button
+          onClick={runWithCurrent}
+          disabled={running}
+          style={{
+            padding: '0.5rem 1.2rem',
+            fontSize: '0.95rem',
+            fontWeight: 600,
+            cursor: running ? 'default' : 'pointer',
+            background: running ? '#222' : '#3a6ea5',
+            color: running ? '#666' : '#fff',
+            border: '1px solid ' + (running ? '#333' : '#5a8fc5'),
+            borderRadius: 4,
+          }}
+          title="Run the brute-force sim with the current stats, completed quests, and killed bosses."
+        >
+          {running ? 'Running…' : 'Run simulation'}
+        </button>
         <div style={{ color: '#888', fontSize: '0.85rem' }}>
-          {running
-            ? 'Running…'
-            : (totalCombos > 0
-              ? `pool: ${poolSize} items · ${totalCombos.toLocaleString()} combinations evaluated`
-              : 'pick a stat preset or drag an unlock to run')}
+          {totalCombos > 0
+            ? `pool: ${poolSize} items · ${totalCombos.toLocaleString()} combinations evaluated`
+            : 'configure stats / quests / bosses, then click Run'}
         </div>
       </section>
 
@@ -627,7 +635,7 @@ export default function CrabSim() {
           Auto-complete completable quests
         </button>
         <button
-          onClick={() => { setCompletedQuests(new Set()); runSim(stats, new Set()); }}
+          onClick={() => setCompletedQuests(new Set())}
           disabled={running}
           style={{
             padding: '0.4rem 0.9rem',
@@ -700,7 +708,7 @@ export default function CrabSim() {
               : (
                 <article style={{ border: '1px dashed #2c2c2c', borderRadius: 8, padding: '2rem 1rem', textAlign: 'center', color: '#666' }}>
                   <h2 style={{ margin: 0, fontSize: '1.25rem' }}>{s[0].toUpperCase() + s.slice(1)}</h2>
-                  <p style={{ margin: '0.5rem 0 0' }}>Pick a stat preset above.</p>
+                  <p style={{ margin: '0.5rem 0 0' }}>Click Run to simulate.</p>
                 </article>
               )}
           </div>
