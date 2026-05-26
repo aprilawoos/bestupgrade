@@ -12,7 +12,7 @@ import { getMonsters, INITIAL_MONSTER_INPUTS } from '@/lib/Monsters';
 import { simulateBestLoadout, SimResult, SimStyle } from '@/lib/loadoutSim';
 import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
 import { AllSkills, autocompletableQuests } from '@/lib/questRequirements';
-import { BOSS_REQS, killableBosses } from '@/lib/bossRequirements';
+import { BOSS_REQS, killableBosses, allBossQuestNames } from '@/lib/bossRequirements';
 import { BossProgression, getPlayerBossDropPool } from '@/lib/bossAccess';
 import type { EquipmentPiece } from '@/types/Player';
 import { ModelViewer } from '@/viewer/ModelViewer';
@@ -186,11 +186,18 @@ function buildProgressionFromQuests(
 export default function CrabSim() {
   const monster = useMemo(() => getCrab(), []);
 
-  // The full unlock catalogue — every quest mentioned in any shop's
-  // shopAccess + the QP pseudo-unlock. Sorted for stable display.
+  // The full unlock catalogue — every quest referenced by any shop's
+  // shopAccess OR any boss's bossAccess + the QP pseudo-unlock. Boss
+  // quests (Dragon Slayer II for Vorkath, Children of the Sun for Sol
+  // Heredit, etc.) need to appear here so the user can mark them and
+  // killableBosses() sees the satisfied gate. Sorted for stable display.
   const allUnlocks = useMemo(() => {
-    const { started, completed } = allVendorQuestNames();
-    const set = new Set<string>([...started, ...completed]);
+    const v = allVendorQuestNames();
+    const b = allBossQuestNames();
+    const set = new Set<string>([
+      ...v.started, ...v.completed,
+      ...b.started, ...b.completed,
+    ]);
     return [...set, QP_PSEUDO_UNLOCK].sort((a, b) => a.localeCompare(b));
   }, []);
 
