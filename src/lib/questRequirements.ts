@@ -91,6 +91,55 @@ export const QUEST_REQS: Record<string, QuestReq> = {
   // DT2-era Mokhaiotl chain.
   "Perilous Moons": { skills: { slayer: 48, hunter: 20, fishing: 20, runecraft: 20, construction: 10 } },
 
+  // ====================================================================
+  // Boss-access quest chain (wiki-verified 2026-05-26). These power the
+  // /crabsim boss panel's killableBosses() filter — without them in the
+  // registry the auto-complete button skips them silently and the boss
+  // stays locked even after meeting the stat reqs.
+  //
+  // Hard reqs only. Quest-chain prereqs (e.g. DS2 needs Legends' Quest +
+  // Dream Mentor + Bone Voyage + Client of Kourend etc.) are intentionally
+  // NOT modelled — see top-of-file LIMITATIONS comment.
+  // ====================================================================
+
+  // Vorkath access. Also requires 200 QP — not modelled here; user accepts
+  // the imprecision (autocomplete will flag DS2 at the skill thresholds
+  // regardless of actual QP).
+  "Dragon Slayer II": { skills: { magic: 75, smithing: 70, mining: 68, crafting: 62, agility: 60, thieving: 60, construction: 50, hitpoints: 50 } },
+
+  // Nex access (DT1) + Ancient staff wield + Ancient sceptre prereq.
+  "Desert Treasure I": { skills: { magic: 50, firemaking: 50, thieving: 53, slayer: 10 } },
+
+  // DT2 quartet (Vardorvis / Duke Sucellus / The Leviathan / The Whisperer).
+  "Desert Treasure II - The Fallen Empire": { skills: { firemaking: 75, magic: 75, thieving: 70, herblore: 62, runecraft: 60, construction: 60 } },
+
+  // Nex frozen-key miniquest.
+  "The Frozen Door": { skills: { agility: 70, ranged: 70, strength: 70, hitpoints: 70 } },
+
+  // Phantom Muspah access.
+  "Secrets of the North": { skills: { agility: 69, thieving: 64, hunter: 56 } },
+
+  // Tombs of Amascut access.
+  "Beneath Cursed Sands": { skills: { agility: 62, crafting: 55, firemaking: 55 } },
+
+  // Yama access.
+  "A Kingdom Divided": { skills: { agility: 54, thieving: 52, woodcutting: 52, herblore: 50, mining: 42, crafting: 38, magic: 35 } },
+
+  // Sol Heredit (Colosseum) access.
+  "Children of the Sun": { skills: {} },
+
+  // Deranged Archaeologist access.
+  "Bone Voyage": { skills: {} },
+
+  // Amoxliatl access.
+  "The Heart of Darkness": { skills: { mining: 55, thieving: 48, slayer: 48, agility: 46 } },
+
+  // Doom of Mokhaiotl access.
+  "The Final Dawn": { skills: { thieving: 66, runecraft: 52, fletching: 52 } },
+
+  // Brutus access.
+  "The Ides of Milk": { skills: {} },
+
   // ----------------------------------------------------------------------
   // NOT a quest — our pseudo-unlock for the inner Mor Ul Rek shop. Boss
   // completion, handled by a future boss-progression UI.
