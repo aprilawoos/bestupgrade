@@ -12,6 +12,7 @@ import { getMonsters, INITIAL_MONSTER_INPUTS } from '@/lib/Monsters';
 import { simulateBestLoadout, SimResult, SimStyle } from '@/lib/loadoutSim';
 import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
 import { AllSkills, autocompletableQuests } from '@/lib/questRequirements';
+import { BOSS_REQS, killableBosses } from '@/lib/bossRequirements';
 import { ModelViewer } from '@/viewer/ModelViewer';
 import type { Monster } from '@/types/Monster';
 import type { PlayerSkills } from '@/types/Player';
@@ -312,6 +313,18 @@ export default function CrabSim() {
   const available = allUnlocks.filter((q) => !completedQuests.has(q));
   const unlocked = allUnlocks.filter((q) => completedQuests.has(q));
 
+  // Bosses the player can kill given current stats + completed quests.
+  // completedQuests is treated as both 'started' and 'completed' since the
+  // page only tracks one set (completion implies start).
+  const killable = useMemo<string[]>(() => {
+    return killableBosses(
+      Object.keys(BOSS_REQS),
+      currentAllSkills,
+      completedQuests,
+      completedQuests,
+    );
+  }, [currentAllSkills, completedQuests]);
+
   const totalCombos = (results.melee?.combosEvaluated ?? 0)
     + (results.ranged?.combosEvaluated ?? 0)
     + (results.magic?.combosEvaluated ?? 0);
@@ -482,6 +495,41 @@ export default function CrabSim() {
       <section style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
         {panel('Available unlocks', available, 'available')}
         {panel('Unlocked', unlocked, 'unlocked')}
+      </section>
+
+      <section style={{ marginTop: '0.75rem', border: '1px dashed #333', borderRadius: 6, padding: '0.6rem', background: '#101010' }}>
+        <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#aaa' }}>
+          Killable bosses <span style={{ color: '#666' }}>({killable.length} of {Object.keys(BOSS_REQS).length})</span>
+        </h3>
+        <p style={{ color: '#555', fontSize: '0.7rem', fontStyle: 'italic', margin: '0 0 0.5rem' }}>
+          Filtered by current stats + completed quests. Slayer-task-gated bosses are included (player can always go get the task).
+        </p>
+        {killable.length === 0
+          ? <p style={{ color: '#555', fontSize: '0.75rem', fontStyle: 'italic', margin: 0 }}>none killable at current progression</p>
+          : (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+              {killable.map((b) => {
+                const req = BOSS_REQS[b];
+                const onTask = req?.onSlayerTask;
+                return (
+                  <span
+                    key={b}
+                    title={onTask ? 'slayer-task locked' : ''}
+                    style={{
+                      padding: '0.25rem 0.5rem',
+                      background: onTask ? '#3a2a4a' : '#1f3a5a',
+                      color: onTask ? '#dccef5' : '#cce0f5',
+                      border: '1px solid ' + (onTask ? '#5a4a7a' : '#3a5a8a'),
+                      borderRadius: 4,
+                      fontSize: '0.75rem',
+                    }}
+                  >
+                    {b}{onTask ? ' (task)' : ''}
+                  </span>
+                );
+              })}
+            </div>
+          )}
       </section>
 
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginTop: '1.25rem' }}>
