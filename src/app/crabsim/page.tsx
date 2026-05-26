@@ -1,10 +1,12 @@
 // === /crabsim ===
-// Brute-forces the no-req vendor item pool to find the best loadout per
-// combat style vs the Gemstone Crab (id 14779, 50 000 HP, 0 defence on
-// every style, no elemental weakness). Two stat presets — Level 1 (fresh
-// account) and all-99s (post-grind) — so the upgrade gap is visible.
+// Brute-forces the player's accessible item pool (vendor + killed-boss
+// drops) to find the best loadout per combat style vs TzKal-Zuk (id 7706
+// version "Normal" — 1200 HP, 350 magic def, 0 stab/slash/crush def,
+// 100 standard ranged def, 40% water-elemental weakness). Stat presets:
+// L1 / hiscores lookup / L99.
 //
-// Iteration uses `simulateBestLoadout` from src/lib/loadoutSim.ts.
+// Iteration uses `simulateBestLoadout` from src/lib/loadoutSim.ts. The
+// route name is still /crabsim for back-compat with bookmarks.
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
@@ -20,11 +22,15 @@ import type { Monster } from '@/types/Monster';
 import type { PlayerSkills } from '@/types/Player';
 
 // === Targets ===
-const CRAB_NPC_ID = 14779;
+// TzKal-Zuk has two monsters.json entries sharing id 7706 — "Normal"
+// (steady-state fight) and "Enraged" (final-phase enrage). We sim the
+// Normal phase since the calc engine doesn't model phase transitions.
+const ZUK_NPC_ID = 7706;
+const ZUK_VERSION = 'Normal';
 
-function getCrab(): Monster {
-  const base = getMonsters().find((m) => m.id === CRAB_NPC_ID);
-  if (!base) throw new Error('Gemstone Crab not in monsters.json');
+function getZuk(): Monster {
+  const base = getMonsters().find((m) => m.id === ZUK_NPC_ID && m.version === ZUK_VERSION);
+  if (!base) throw new Error(`TzKal-Zuk (${ZUK_VERSION}) not in monsters.json`);
   return { ...base, inputs: { ...INITIAL_MONSTER_INPUTS } };
 }
 
@@ -85,8 +91,8 @@ function StyleCard({ result }: { result: SimResult }) {
           <ModelViewer src={playerSrc} height={300} />
         </div>
         <div>
-          <h3 style={{ margin: '0 0 0.25rem', fontSize: '0.85rem', color: '#aaa' }}>Gemstone Crab</h3>
-          <ModelViewer modelId={CRAB_NPC_ID} kind="npc" height={300} />
+          <h3 style={{ margin: '0 0 0.25rem', fontSize: '0.85rem', color: '#aaa' }}>TzKal-Zuk</h3>
+          <ModelViewer modelId={ZUK_NPC_ID} kind="npc" height={300} />
         </div>
       </div>
 
@@ -184,7 +190,7 @@ function buildProgressionFromQuests(
 }
 
 export default function CrabSim() {
-  const monster = useMemo(() => getCrab(), []);
+  const monster = useMemo(() => getZuk(), []);
 
   // The full unlock catalogue — every quest referenced by any shop's
   // shopAccess OR any boss's bossAccess + the QP pseudo-unlock. Boss
@@ -542,13 +548,14 @@ export default function CrabSim() {
 
   return (
     <main style={{ maxWidth: 1600, margin: '0 auto', padding: '1.5rem' }}>
-      <h1 style={{ margin: '0 0 0.5rem' }}>Crab simulation — vendor starter pool</h1>
+      <h1 style={{ margin: '0 0 0.5rem' }}>TzKal-Zuk simulation</h1>
       <p style={{ color: '#888', marginTop: 0 }}>
-        Brute-forces the vendor shop pool vs the Gemstone Crab (50 000 HP,
-        0 defence, no elemental weakness). Pick a stat preset and drag quest
-        unlocks between the two panels — the 3 style cards re-run on every
-        change. Ties on DPS are broken by total defensive stat, then prayer
-        bonus.
+        Brute-forces the player&apos;s accessible pool (vendor shops + drops
+        from killed bosses) to find the best loadout per combat style vs
+        TzKal-Zuk Normal phase (1200 HP, 0 stab/slash/crush def, 350 magic
+        def, 100 standard ranged def, weak to water 40%). Configure stats /
+        quests / bosses and click Run. Ties on DPS are broken by total
+        defensive stat, then prayer bonus.
       </p>
 
       {error && <p style={{ color: '#f55', marginTop: '0.75rem' }}>Error: {error}</p>}
