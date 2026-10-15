@@ -140,6 +140,97 @@ export const QUEST_REQS: Record<string, QuestReq> = {
   // Brutus access.
   "The Ides of Milk": { skills: {} },
 
+  // Shellbane Gryphon access. Wiki also lists 45 Sailing — omitted here
+  // because the hiscores API + currentAllSkills don't track Sailing yet,
+  // so including it would block autocomplete for every player. Same
+  // imprecision principle as the quest-chain prereqs noted at the top.
+  "Troubled Tortugans": { skills: { slayer: 51, construction: 48, hunter: 45, woodcutting: 40, crafting: 34 } },
+
+  // ====================================================================
+  // Misc-pool quests / miniquests referenced by src/lib/miscDrops.ts.
+  // Wiki-verified stat reqs (hard only); quest-chain prereqs omitted per
+  // the file-header LIMITATIONS.
+  // ====================================================================
+
+  "The Knight's Sword": { skills: { mining: 10 } },
+  "Imp Catcher": { skills: {} },
+  "Demon Slayer": { skills: {} },
+  "Lost City": { skills: { crafting: 31, woodcutting: 36 } },
+  "Merlin's Crystal": { skills: {} },
+  "Family Crest": { skills: { mining: 40, smithing: 40, crafting: 40, magic: 59 } },
+  "Tree Gnome Village": { skills: {} },
+  "Fight Arena": { skills: {} },
+  "Hazeel Cult": { skills: {} },
+  "Observatory Quest": { skills: {} },
+  "Big Chompy Bird Hunting": { skills: { ranged: 30, fletching: 5, cooking: 30 } },
+  "Elemental Workshop I": { skills: { mining: 20, smithing: 20, crafting: 20 } },
+  "Legends' Quest": { skills: { magic: 56, mining: 52, agility: 50, crafting: 50, herblore: 45, prayer: 42, smithing: 50, strength: 50, thieving: 50, woodcutting: 50 } },
+  "Death Plateau": { skills: {} },
+  "Underground Pass": { skills: { ranged: 25 } },
+  "Mountain Daughter": { skills: { agility: 20 } },
+  "Between a Rock...": { skills: { defence: 30, mining: 40, smithing: 50 } },
+  "The Feud": { skills: { thieving: 30 } },
+  "Roving Elves": { skills: { agility: 56 } },
+  "Creature of Fenkenstrain": { skills: { crafting: 20, thieving: 25 } },
+  "Garden of Tranquillity": { skills: { farming: 25 } },
+  "A Tail of Two Cats": { skills: {} },
+  "Wanted!": { skills: {} },
+  "Shadow of the Storm": { skills: { crafting: 30 } },
+  "Enakhra's Lament": { skills: { crafting: 50, prayer: 43, magic: 39, firemaking: 45 } },
+  "Fairytale I - Growing Pains": { skills: {} },
+  "Lunar Diplomacy": { skills: { magic: 65, mining: 60, crafting: 61, woodcutting: 55, firemaking: 49, defence: 40 } },
+
+  // King's Ransom gates Chivalry / Piety via the Knight Waves miniquest it
+  // unlocks. Skill reqs are 45 magic + 65 defence (wiki, fetched 2026-05-27).
+  "King's Ransom": { skills: { magic: 45, defence: 65 } },
+  "The Eyes of Glouphrie": { skills: { construction: 5, magic: 46 } },
+  "The Fremennik Isles": { skills: { construction: 20, woodcutting: 56 } },
+  "The Great Brain Robbery": { skills: { crafting: 16, construction: 30, prayer: 50 } },
+  "What Lies Below": { skills: { runecraft: 35 } },
+  "Another Slice of H.A.M.": { skills: { attack: 15, prayer: 25 } },
+  "Grim Tales": { skills: { woodcutting: 71, thieving: 58, agility: 59, herblore: 52, farming: 45 } },
+  "Rag and Bone Man II": { skills: { defence: 20, slayer: 40 } },
+  "Horror from the Deep": { skills: { agility: 35 } },
+  "Haunted Mine": { skills: { crafting: 35 } },
+  "Animal Magnetism": { skills: { slayer: 18, crafting: 19, ranged: 30, woodcutting: 35 } },
+  "Monkey Madness I": { skills: {} },
+  "Elemental Workshop II": { skills: { magic: 20, smithing: 30 } },
+  "The Fremennik Exiles": { skills: { crafting: 65, slayer: 60, smithing: 60, fishing: 60, runecraft: 55 } },
+  "A Taste of Hope": { skills: { crafting: 48, agility: 45, attack: 40, herblore: 40, slayer: 38 } },
+  "Mourning's End Part II": { skills: { thieving: 50, ranged: 60 } },
+  "Olaf's Quest": { skills: { firemaking: 50, woodcutting: 50 } },
+  "Monkey Madness II": { skills: { slayer: 69, crafting: 70, hunter: 60, agility: 55, thieving: 55, firemaking: 60 } },
+  "The Lost Tribe": { skills: { agility: 13, thieving: 13, mining: 17 } },
+  "The Restless Ghost": { skills: {} },
+  "Icthlarin's Little Helper": { skills: {} },
+
+  // ----------------------------------------------------------------------
+  // RFD subquests — each gates a glove tier; flat list, no per-subquest
+  // skill prereqs surfaced as hard reqs in our model (the underlying
+  // recipe / boss / cooking reqs are summarised here from the wiki).
+  // ----------------------------------------------------------------------
+  "Recipe for Disaster/Another Cook's Quest": { skills: {} },
+  "Recipe for Disaster/Freeing the Mountain Dwarf": { skills: {} },
+  "Recipe for Disaster/Freeing the Goblin generals": { skills: {} },
+  "Recipe for Disaster/Freeing Pirate Pete": { skills: { cooking: 31, crafting: 31, agility: 30, fishing: 31, thieving: 31, magic: 31 } },
+  "Recipe for Disaster/Freeing the Lumbridge Guide": { skills: { cooking: 40, magic: 35 } },
+  "Recipe for Disaster/Freeing Evil Dave": { skills: { cooking: 25 } },
+  "Recipe for Disaster/Freeing Sir Amik Varze": { skills: { cooking: 25 } },
+  "Recipe for Disaster/Freeing King Awowogei": { skills: { cooking: 70, agility: 48 } },
+  "Recipe for Disaster/Freeing Skrach Uglogwee": { skills: { cooking: 41, firemaking: 20, woodcutting: 35 } },
+  "Recipe for Disaster/Defeating the Culinaromancer": { skills: {} },
+
+  // ----------------------------------------------------------------------
+  // Miniquests referenced by misc sources (Mage Arena, Tarn, Ghosts).
+  // No quest-list APIs cover miniquests, so the user is on their own to
+  // mark these — but they appear in the unlocks panel via allMiscQuestNames.
+  // ----------------------------------------------------------------------
+  "The Mage Arena": { skills: { magic: 60 } },
+  "Mage Arena II": { skills: { magic: 75 } },
+  "Curse of the Empty Lord": { skills: {} },
+  "Barbarian Training": { skills: {} },
+  "Shadows of Custodia": { skills: {} },
+
   // ----------------------------------------------------------------------
   // NOT a quest — our pseudo-unlock for the inner Mor Ul Rek shop. Boss
   // completion, handled by a future boss-progression UI.

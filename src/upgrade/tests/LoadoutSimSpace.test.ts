@@ -4,8 +4,8 @@
 
 import { describe, test } from '@jest/globals';
 import { getMonsters, INITIAL_MONSTER_INPUTS } from '@/lib/Monsters';
-import { describeSimSpace, SimStyle } from '@/lib/loadoutSim';
-import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
+import { describeSimSpace, SimStyle } from '@/upgrade/lib/loadoutSim';
+import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/upgrade/lib/vendorAccess';
 import type { PlayerSkills } from '@/types/Player';
 
 describe('LoadoutSim space @ L99 vs Crab', () => {
@@ -47,9 +47,12 @@ describe('LoadoutSim space @ L99 vs Crab', () => {
     }
 
     console.log('\nArmour frontiers (Pareto-pruned per slot, includes null):');
-    for (const [slot, items] of Object.entries(space.armourFrontiers)) {
-      const names = items.map((i) => i?.name ?? '(none)').join(', ');
-      console.log(`  ${slot.padEnd(7)} [${items.length}]: ${names}`);
+    for (const [key, frontiers] of Object.entries(space.armourFrontiers)) {
+      console.log(` [${key}]`);
+      for (const [slot, items] of Object.entries(frontiers)) {
+        const names = items.map((i) => i?.name ?? '(none)').join(', ');
+        console.log(`  ${slot.padEnd(7)} [${items.length}]: ${names}`);
+      }
     }
     /* eslint-enable no-console */
   });

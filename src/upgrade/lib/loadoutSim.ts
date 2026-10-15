@@ -10,8 +10,10 @@
 // Approach: Pareto-frontier-prune each armour slot first (eliminate items
 // strictly dominated by another in (offensive-relevant + sum-defence +
 // prayer)) — this is a PROVABLY equivalent reduction, not a heuristic.
-// Then iterate the Cartesian product of frontiers × weapons × stances and
-// compute DPS via the canonical calc engine for every combination.
+// Melee frontiers are built per attack type (stab / slash / crush) since a
+// stance only reads strength + its own type's accuracy. Then iterate the
+// Cartesian product of frontiers × weapons × stances and compute DPS via
+// the canonical calc engine for every combination.
 //
 // Stances iterated:
 //   - Melee: every stance from the weapon's category (TODO: prune Defensive
@@ -37,9 +39,17 @@ import { getCombatStylesForCategory } from '@/utils';
 import { EquipmentCategory, MAGIC_WEAPONS } from '@/enums/EquipmentCategory';
 import PlayerVsNPCCalc from '@/lib/PlayerVsNPCCalc';
 import { generateEmptyPlayer } from '@/state';
-import { PlayerCombatStyle } from '@/types/PlayerCombatStyle';
+import { CombatStyleType, PlayerCombatStyle } from '@/types/PlayerCombatStyle';
 import { Spell, spellByName } from '@/types/Spell';
-import { SET_BONUSES, setsActivatedByWeapon } from '@/lib/setBonuses';
+import {
+  IMMUNE_TO_MAGIC_DAMAGE_NPC_IDS,
+  IMMUNE_TO_MELEE_DAMAGE_NPC_IDS,
+  IMMUNE_TO_RANGED_DAMAGE_NPC_IDS,
+  ZULRAH_IDS,
+} from '@/lib/constants';
+import { SET_BONUSES, setsActivatedByWeapon } from '@/upgrade/lib/setBonuses';
+import { applyBestPotionsForStyle } from '@/upgrade/lib/simPotions';
+import { applyBestPrayersForStyle } from '@/upgrade/lib/simPrayers';
 
 // =====
 // Public types
@@ -82,6 +92,14 @@ export interface SimOptions {
   monster: Monster;
   skills: Partial<PlayerSkills>;
   style: SimStyle;
+  /** Quests completed — used by simPrayers to gate Chivalry/Piety (King's
+   *  Ransom). Optional: defaults to empty set, which disables those prayers. */
+  questsCompleted?: ReadonlySet<string>;
+  /** Bosses the player has access to (typically the user's "killed" set).
+   *  Used by simPrayers to gate scroll-unlock prayers (Rigour/Augury from
+   *  CoX; Deadeye/Mystic Vigour from Royal Titans). Optional: defaults to
+   *  empty set, which disables those prayers. */
+  accessibleBossSet?: ReadonlySet<string>;
 }
 
 // =====
@@ -103,6 +121,26 @@ function styleAllowsWeapon(item: EquipmentPiece, style: SimStyle): boolean {
   if (style === 'magic') return MAGIC_WEAPON_CATS.has(cat);
   if (cat === EquipmentCategory.NONE) return false;
   return !RANGED_WEAPON_CATS.has(cat) && !MAGIC_WEAPON_CATS.has(cat);
+}
+
+// =====
+// Style immunity — styles the target can't be damaged by REGARDLESS of
+// gear. Mirrors the gear-independent branches of PlayerVsNPCCalc.isImmune:
+// the three per-NPC immunity lists. Zulrah is excluded from the melee check
+// because the calc lets polearms hit it. Gear-dependent immunity
+// (flying, vampyres, leafy, ...) is left to the calc — those loadouts just
+// score 0 DPS.
+//
+// Without this, an immune style brute-forces its whole candidate space
+// only to rank loadouts that all deal 0 DPS (melee vs TzKal-Zuk was ~1M
+// combos of pure noise).
+// =====
+export function isMonsterImmuneToStyle(monster: Monster, style: SimStyle): boolean {
+  if (style === 'melee') {
+    return IMMUNE_TO_MELEE_DAMAGE_NPC_IDS.includes(monster.id) && !ZULRAH_IDS.includes(monster.id);
+  }
+  if (style === 'ranged') return IMMUNE_TO_RANGED_DAMAGE_NPC_IDS.includes(monster.id);
+  return IMMUNE_TO_MAGIC_DAMAGE_NPC_IDS.includes(monster.id);
 }
 
 // =====
@@ -227,6 +265,28 @@ function stancesForStyle(weapon: EquipmentPiece, style: SimStyle): PlayerCombatS
 }
 
 // =====
+// Attack types the sim evaluates for a weapon — the types of every stance
+// it would try (stancesForStyle) under the one style the weapon belongs to.
+// Exported for itemDominance so obsolescence is judged over exactly this
+// search space. Empty for weapons no sim style accepts.
+// =====
+export function simAttackTypesForWeapon(weapon: EquipmentPiece): CombatStyleType[] {
+  const style = (['melee', 'ranged', 'magic'] as SimStyle[]).find((s) => styleAllowsWeapon(weapon, s));
+  if (!style) return [];
+  const types = new Set<CombatStyleType>();
+  for (const s of stancesForStyle(weapon, style)) {
+    if (s.type !== null) types.add(s.type);
+  }
+  return [...types];
+}
+
+// =====
+// Armour slots — every slot except weapon + ammo (weapons are iterated
+// directly; ammo is auto-paired per weapon).
+// =====
+const ARMOUR_SLOTS = ['head', 'cape', 'neck', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'] as const;
+
+// =====
 // Pareto frontier per armour slot.
 //
 // An item A dominates B if it's >= on every stat in the relevance vector
@@ -236,8 +296,31 @@ function stancesForStyle(weapon: EquipmentPiece, style: SimStyle): PlayerCombatS
 //   - DPS-relevant offensive stats for that style
 //   - Sum of defensive stats (one number — matches the tie-break definition)
 //   - Prayer bonus
+//
+// Frontier keys — melee frontiers are built PER ATTACK TYPE. A stance's
+// DPS reads only melee strength plus the accuracy bonus for its own attack
+// type (stab / slash / crush), so a crush stance gains nothing from an
+// item's stab or slash accuracy. Pruning on the 2-stat [str, off[type]]
+// vector instead of the 4-stat [str, stab, slash, crush] vector is the
+// same dominance argument applied to the stats that actually matter, and
+// collapses frontiers where items trade off across attack types (Torva vs
+// Inquisitor's vs Oathplate). Melee stances with a non-melee type fall
+// back to the 4-stat 'all' key. Ranged and magic always use 'all' — their
+// vectors are already 2-stat.
 // =====
-function offensiveStatVec(style: SimStyle, item: EquipmentPiece | null): number[] {
+type MeleeAttackType = 'stab' | 'slash' | 'crush';
+type FrontierKey = MeleeAttackType | 'all';
+
+function frontierKeyForStance(style: SimStyle, stance: PlayerCombatStyle): FrontierKey {
+  if (style !== 'melee') return 'all';
+  if (stance.type === 'stab' || stance.type === 'slash' || stance.type === 'crush') return stance.type;
+  return 'all';
+}
+
+function offensiveStatVec(style: SimStyle, item: EquipmentPiece | null, key: FrontierKey): number[] {
+  if (style === 'melee' && key !== 'all') {
+    return item ? [item.bonuses.str, item.offensive[key]] : [0, 0];
+  }
   if (!item) {
     return style === 'melee' ? [0, 0, 0, 0] : [0, 0];
   }
@@ -277,19 +360,25 @@ function defSum(item: EquipmentPiece | null): number {
 // lex tie-break because DPS dominates defSum). Multi-objective Pareto
 // would have kept them.
 //
-// Validity for stance brute-force (melee): the offensive vector for melee
-// is [str, off.stab, off.slash, off.crush]. An item that's ≥ on ALL four
-// components is at least as good as the dominated item for ANY stance.
-// So stance-induced offensive variation is already covered.
+// Validity for stance brute-force (melee): each melee stance is iterated
+// against the frontier for its own attack type, whose offensive vector is
+// [str, off[type]]. An item that's ≥ on both components is at least as
+// good as the dominated item for every stance of that type. The 'all' key
+// ([str, stab, slash, crush]) covers any stance without a melee type.
 //
 // Validity for future pools with positive str/rstr/mstr items: those
 // bonuses are already in offensiveStatVec, so they're part of the DPS-
 // relevant section. Adding new items with positive strength bonuses
 // reshapes the offensive frontier but the rule itself remains correct.
 // =====
-function isLexDominated(a: EquipmentPiece | null, b: EquipmentPiece | null, style: SimStyle): boolean {
-  const offA = offensiveStatVec(style, a);
-  const offB = offensiveStatVec(style, b);
+function isLexDominated(
+  a: EquipmentPiece | null,
+  b: EquipmentPiece | null,
+  style: SimStyle,
+  key: FrontierKey,
+): boolean {
+  const offA = offensiveStatVec(style, a, key);
+  const offB = offensiveStatVec(style, b, key);
 
   let strictOff = false;
   for (let i = 0; i < offA.length; i += 1) {
@@ -312,33 +401,54 @@ function isLexDominated(a: EquipmentPiece | null, b: EquipmentPiece | null, styl
 // to a single representative — Red cape / Yellow cape kind of pairs that
 // are stat-equivalent and would otherwise both survive Pareto since
 // neither strictly dominates the other. First encountered wins.
-function dedupeByRelevantStats(items: (EquipmentPiece | null)[], style: SimStyle): (EquipmentPiece | null)[] {
+function dedupeByRelevantStats(
+  items: (EquipmentPiece | null)[],
+  style: SimStyle,
+  key: FrontierKey,
+): (EquipmentPiece | null)[] {
   const seen = new Map<string, EquipmentPiece | null>();
   for (const item of items) {
-    const key = [
-      ...offensiveStatVec(style, item),
+    const statKey = [
+      ...offensiveStatVec(style, item, key),
       defSum(item),
       item ? item.bonuses.prayer : 0,
     ].join(',');
-    if (!seen.has(key)) seen.set(key, item);
+    if (!seen.has(statKey)) seen.set(statKey, item);
   }
   return [...seen.values()];
 }
 
-function paretoFrontier(items: (EquipmentPiece | null)[], style: SimStyle): (EquipmentPiece | null)[] {
-  const deduped = dedupeByRelevantStats(items, style);
+function paretoFrontier(
+  items: (EquipmentPiece | null)[],
+  style: SimStyle,
+  key: FrontierKey,
+): (EquipmentPiece | null)[] {
+  const deduped = dedupeByRelevantStats(items, style, key);
   const keep = deduped.map(() => true);
   for (let i = 0; i < deduped.length; i += 1) {
     if (!keep[i]) continue;
     for (let j = 0; j < deduped.length; j += 1) {
       if (i === j || !keep[j]) continue;
-      if (isLexDominated(deduped[i], deduped[j], style)) {
+      if (isLexDominated(deduped[i], deduped[j], style, key)) {
         keep[i] = false;
         break;
       }
     }
   }
   return deduped.filter((_, i) => keep[i]);
+}
+
+// Build the per-slot frontier map for one frontier key. `null` (empty
+// slot) is always a candidate and competes on its own merits.
+type ArmourFrontiers = Record<typeof ARMOUR_SLOTS[number], (EquipmentPiece | null)[]>;
+
+function buildArmourFrontiers(pool: EquipmentPiece[], style: SimStyle, key: FrontierKey): ArmourFrontiers {
+  const out = {} as ArmourFrontiers;
+  for (const slot of ARMOUR_SLOTS) {
+    const items = pool.filter((p) => p.slot === slot) as (EquipmentPiece | null)[];
+    out[slot] = paretoFrontier([null, ...items], style, key);
+  }
+  return out;
 }
 
 // =====
@@ -419,10 +529,11 @@ function isStrictlyBetter(
 export interface SimSpace {
   weapons: { weapon: EquipmentPiece; ammo: EquipmentPiece | null; stances: PlayerCombatStyle[] }[];
   spells: Spell[];          // empty for melee/ranged
-  armourFrontiers: Record<string, (EquipmentPiece | null)[]>;
+  /** Armour frontiers keyed first by frontier key — 'stab' / 'slash' /
+   *  'crush' for melee stance types, 'all' otherwise — then by slot. Only
+   *  keys some candidate stance actually uses are present. */
+  armourFrontiers: Record<string, Record<string, (EquipmentPiece | null)[]>>;
 }
-
-const ARMOUR_SLOTS = ['head', 'cape', 'neck', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'] as const;
 
 export function describeSimSpace(opts: SimOptions): SimSpace {
   const { pool, monster, skills, style } = opts;
@@ -435,20 +546,28 @@ export function describeSimSpace(opts: SimOptions): SimSpace {
   }));
   const magicLevel = skills.magic ?? 99;
   const spells: Spell[] = style === 'magic' ? spellsToTryForMagic(magicLevel, monster.weakness) : [];
-  const armourFrontiers: Record<string, (EquipmentPiece | null)[]> = {};
-  for (const slot of ARMOUR_SLOTS) {
-    const items = pool.filter((p) => p.slot === slot) as (EquipmentPiece | null)[];
-    armourFrontiers[slot] = paretoFrontier([null, ...items], style);
+  const armourFrontiers: Record<string, Record<string, (EquipmentPiece | null)[]>> = {};
+  for (const w of weapons) {
+    for (const stance of w.stances) {
+      const key = frontierKeyForStance(style, stance);
+      if (!armourFrontiers[key]) armourFrontiers[key] = buildArmourFrontiers(pool, style, key);
+    }
   }
   return { weapons, spells, armourFrontiers };
 }
 
 // =====
 // Public entry point
+//
+// Returns null when the target is immune to the style (see
+// isMonsterImmuneToStyle) or when the pool has no usable weapon for it.
 // =====
 export function simulateBestLoadout(opts: SimOptions): SimResult | null {
   const t0 = performance.now();
   const { pool, monster, skills, style } = opts;
+  if (isMonsterImmuneToStyle(monster, style)) return null;
+  const questsCompleted = opts.questsCompleted ?? new Set<string>();
+  const accessibleBossSet = opts.accessibleBossSet ?? new Set<string>();
 
   // ----- Weapons (brute-forced, no Pareto) -----
   const weapons = pool
@@ -458,21 +577,31 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
 
   const ammoPool = pool.filter((p) => p.slot === 'ammo');
 
-  // ----- Armour Pareto frontiers per slot -----
-  const armorSlots = ['head', 'cape', 'neck', 'body', 'shield', 'legs', 'hands', 'feet', 'ring'] as const;
-  const baseFrontiers: Record<typeof armorSlots[number], (EquipmentPiece | null)[]> = {} as any;
-  const frontierSizes: Record<string, number> = {};
-  for (const slot of armorSlots) {
-    const items = pool.filter((p) => p.slot === slot) as (EquipmentPiece | null)[];
-    baseFrontiers[slot] = paretoFrontier([null, ...items], style);
-    frontierSizes[slot] = baseFrontiers[slot].length;
-  }
+  // ----- Armour Pareto frontiers per slot, built lazily per frontier key -----
+  // Melee builds up to three (stab / slash / crush); ranged + magic build
+  // one ('all'). See frontierKeyForStance.
+  const frontiersByKey = new Map<FrontierKey, ArmourFrontiers>();
+  const frontiersFor = (key: FrontierKey): ArmourFrontiers => {
+    let f = frontiersByKey.get(key);
+    if (!f) {
+      f = buildArmourFrontiers(pool, style, key);
+      frontiersByKey.set(key, f);
+    }
+    return f;
+  };
+  const frontierSizesOf = (f: ArmourFrontiers): Record<string, number> => {
+    const out: Record<string, number> = {};
+    for (const slot of ARMOUR_SLOTS) out[slot] = f[slot].length;
+    return out;
+  };
 
   // ----- Brute force the Cartesian product -----
   // For magic, we also brute force every castable elemental spell at the
   // player's magic level + monster weakness. See `spellsToTryForMagic`.
   // For melee/ranged, spell stays null and the inner loop runs once.
   const player = makeBasePlayer(skills);
+  applyBestPotionsForStyle(player, style);
+  applyBestPrayersForStyle(player, style, questsCompleted, accessibleBossSet);
   const magicLevel = skills.magic ?? 99;
   const spellOptions: (Spell | null)[] = style === 'magic'
     ? spellsToTryForMagic(magicLevel, monster.weakness)
@@ -500,7 +629,7 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
     ammo: EquipmentPiece | null,
     stance: PlayerCombatStyle,
     spell: Spell | null,
-    frontiers: Record<string, (EquipmentPiece | null)[]>,
+    frontiers: ArmourFrontiers,
   ): void => {
     const shieldOptions = weapon.isTwoHanded ? [null] : frontiers.shield;
     for (const head of frontiers.head) {
@@ -533,7 +662,7 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
                           defSum: score.defSum,
                           prayerBonus: score.prayerBonus,
                           combosEvaluated: 0,
-                          frontierSizes: { ...frontierSizes },
+                          frontierSizes: frontierSizesOf(frontiers),
                           elapsedMs: 0,
                         };
                         state.bestKey = key;
@@ -555,13 +684,17 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
   // (meaning the set can't be assembled).
   const pinSetFrontiers = (
     setName: string,
-  ): Record<string, (EquipmentPiece | null)[]> | null => {
+    base: ArmourFrontiers,
+  ): ArmourFrontiers | null => {
     const set = SET_BONUSES.find((s) => s.name === setName);
     if (!set) return null;
-    const pinned: Record<string, (EquipmentPiece | null)[]> = { ...baseFrontiers };
+    const pinned: ArmourFrontiers = { ...base };
     for (const piece of set.pieces) {
       const item = pool.find((p) => p.slot === piece.slot && p.name === piece.itemName);
       if (!item) return null;
+      // Ammo isn't an iterated slot (it's auto-paired per weapon), so an
+      // ammo set piece only needs to be present in the pool.
+      if (piece.slot === 'ammo') continue;
       pinned[piece.slot] = [item];
     }
     return pinned;
@@ -573,6 +706,9 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
     const triggeredSets = setsActivatedByWeapon(weapon.name);
 
     for (const stance of stances) {
+      // Frontier set for this stance's attack type (melee) or 'all'.
+      const baseFrontiers = frontiersFor(frontierKeyForStance(style, stance));
+
       for (const spell of spellOptions) {
         // Normal pass — Pareto-pruned frontiers. Covers loadouts where no
         // set bonus is involved.
@@ -582,7 +718,7 @@ export function simulateBestLoadout(opts: SimOptions): SimResult | null {
         // Forces the set's armour pieces into their slots so the calc
         // actually sees a complete set and applies its bonus.
         for (const set of triggeredSets) {
-          const pinned = pinSetFrontiers(set.name);
+          const pinned = pinSetFrontiers(set.name, baseFrontiers);
           if (pinned) iterateOverArmour(weapon, ammo, stance, spell, pinned);
         }
       }

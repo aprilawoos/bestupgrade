@@ -1,7 +1,7 @@
 import { describe, test, expect } from '@jest/globals';
 import { getMonsters, INITIAL_MONSTER_INPUTS } from '@/lib/Monsters';
-import { simulateBestLoadout, SimStyle } from '@/lib/loadoutSim';
-import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
+import { simulateBestLoadout, SimStyle } from '@/upgrade/lib/loadoutSim';
+import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/upgrade/lib/vendorAccess';
 import type { PlayerSkills } from '@/types/Player';
 
 describe('LoadoutSim — Gemstone Crab vs vendor pool', () => {

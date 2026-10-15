@@ -5,21 +5,24 @@
 // 100 standard ranged def, 40% water-elemental weakness). Stat presets:
 // L1 / hiscores lookup / L99.
 //
-// Iteration uses `simulateBestLoadout` from src/lib/loadoutSim.ts. The
-// route name is still /crabsim for back-compat with bookmarks.
+// Iteration uses `simulateBestLoadout` from src/upgrade/lib/loadoutSim.ts,
+// over the pool minus obsolete items (src/upgrade/lib/obsoleteItems.ts).
+// The route name is still /crabsim for back-compat with bookmarks.
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
 import { getMonsters, INITIAL_MONSTER_INPUTS } from '@/lib/Monsters';
-import { simulateBestLoadout, SimResult, SimStyle } from '@/lib/loadoutSim';
-import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/lib/vendorAccess';
-import { AllSkills, autocompletableQuests } from '@/lib/questRequirements';
-import { BOSS_REQS, killableBosses, allBossQuestNames } from '@/lib/bossRequirements';
-import { BossProgression, getPlayerBossDropPool } from '@/lib/bossAccess';
-import type { EquipmentPiece } from '@/types/Player';
+import { isMonsterImmuneToStyle, simulateBestLoadout, SimResult, SimStyle } from '@/upgrade/lib/loadoutSim';
+import { allVendorQuestNames, getPlayerAccessiblePool, PlayerProgression } from '@/upgrade/lib/vendorAccess';
+import { AllSkills, autocompletableQuests } from '@/upgrade/lib/questRequirements';
+import { BOSS_REQS, killableBosses, allBossQuestNames } from '@/upgrade/lib/bossRequirements';
+import { BossProgression, getPlayerBossDropPool } from '@/upgrade/lib/bossAccess';
+import { MISC_REQS, accessibleMiscSources, allMiscQuestNames } from '@/upgrade/lib/miscRequirements';
+import { getPlayerMiscDropPool } from '@/upgrade/lib/miscAccess';
+import { ALL_OSRS_SKILLS, findObsoleteItems } from '@/upgrade/lib/obsoleteItems';
+import type { EquipmentPiece, PlayerSkills } from '@/types/Player';
 import { ModelViewer } from '@/viewer/ModelViewer';
 import type { Monster } from '@/types/Monster';
-import type { PlayerSkills } from '@/types/Player';
 
 // === Targets ===
 // TzKal-Zuk has two monsters.json entries sharing id 7706 — "Normal"
@@ -35,23 +38,39 @@ function getZuk(): Monster {
 }
 
 // === Progression presets ===
-// L1 = fresh ironman: lvl 1 everywhere, hp 10, 0 quest points, no quests
-// started or completed. Pool collapses to walk-up shop items only.
-// L99 = maxed: every combat + relevant non-combat skill at 99, all
-// quest-gated vendor shops unlocked (every quest referenced by any shop
-// access req in the dataset is marked Completed, which implies Started),
-// and 290 quest points to clear Champions' Guild and similar QP gates.
-const L1_SKILLS: Partial<PlayerSkills> = {
-  atk: 1, str: 1, def: 1,
-  ranged: 1, magic: 1, prayer: 1,
-  hp: 10, mining: 1, herblore: 1,
-};
+// All player skill state is stored in ONE long-form dict (AllSkills) that
+// matches the hiscores response + questRequirements + vendorRequirements
+// + bossRequirements convention. L1 / L99 are derived by stamping every
+// known skill to the preset level; lookup uses the hiscores `allSkills`
+// payload as-is.
 
-const L99_SKILLS: Partial<PlayerSkills> = {
-  atk: 99, str: 99, def: 99,
-  ranged: 99, magic: 99, prayer: 99,
-  hp: 99, mining: 99, herblore: 99,
-};
+// The L1/L99 presets stamp every OSRS skill (ALL_OSRS_SKILLS) so any
+// vendor/boss/quest req lookup finds a defined level.
+function makePresetSkills(level: number): AllSkills {
+  const out: AllSkills = {};
+  for (const s of ALL_OSRS_SKILLS) out[s] = level;
+  // Hitpoints starts at 10 on a fresh account regardless of preset.
+  if (level < 10) out.hitpoints = 10;
+  return out;
+}
+
+// Long-form → short-form translation at the calc-engine boundary.
+// simulateBestLoadout / the calc engine consume Partial<PlayerSkills>
+// (atk/str/def/...) so we narrow at the call site and keep all other
+// player state long-form.
+function toCalcSkills(all: AllSkills): Partial<PlayerSkills> {
+  return {
+    atk: all.attack,
+    str: all.strength,
+    def: all.defence,
+    hp: all.hitpoints,
+    ranged: all.ranged,
+    magic: all.magic,
+    prayer: all.prayer,
+    mining: all.mining,
+    herblore: all.herblore,
+  };
+}
 
 
 // === Slot order for display ===
@@ -171,16 +190,11 @@ function describeBossReqs(boss: string): string {
   return parts.join(', ') || 'no reqs';
 }
 
-function buildProgressionFromQuests(
-  stats: StatsPreset,
+function buildProgression(
   completed: ReadonlySet<string>,
-  lookedUpSkills: Partial<PlayerSkills> | null,
+  skills: AllSkills,
 ): PlayerProgression {
   const realQuests = new Set([...completed].filter((q) => q !== QP_PSEUDO_UNLOCK));
-  let skills: Partial<PlayerSkills>;
-  if (stats === 'L1') skills = L1_SKILLS;
-  else if (stats === 'L99') skills = L99_SKILLS;
-  else skills = lookedUpSkills ?? L1_SKILLS; // fall back to L1 if lookup hasn't loaded yet
   return {
     skills,
     questPoints: completed.has(QP_PSEUDO_UNLOCK) ? 32 : 0,
@@ -193,16 +207,16 @@ export default function CrabSim() {
   const monster = useMemo(() => getZuk(), []);
 
   // The full unlock catalogue — every quest referenced by any shop's
-  // shopAccess OR any boss's bossAccess + the QP pseudo-unlock. Boss
-  // quests (Dragon Slayer II for Vorkath, Children of the Sun for Sol
-  // Heredit, etc.) need to appear here so the user can mark them and
-  // killableBosses() sees the satisfied gate. Sorted for stable display.
+  // shopAccess OR any boss's bossAccess OR any misc source + the QP
+  // pseudo-unlock. Sources from all three pools share the quest panel.
   const allUnlocks = useMemo(() => {
     const v = allVendorQuestNames();
     const b = allBossQuestNames();
+    const m = allMiscQuestNames();
     const set = new Set<string>([
       ...v.started, ...v.completed,
       ...b.started, ...b.completed,
+      ...m.started, ...m.completed,
     ]);
     return [...set, QP_PSEUDO_UNLOCK].sort((a, b) => a.localeCompare(b));
   }, []);
@@ -210,69 +224,107 @@ export default function CrabSim() {
   const [stats, setStats] = useState<StatsPreset>('L1');
   const [completedQuests, setCompletedQuests] = useState<Set<string>>(new Set());
   const [killedBosses, setKilledBosses] = useState<Set<string>>(new Set());
+  const [acquiredSources, setAcquiredSources] = useState<Set<string>>(new Set());
   const [results, setResults] = useState<ResultsByStyle>(EMPTY_RESULTS);
   const [poolSize, setPoolSize] = useState<number>(0);
+  const [obsoleteCount, setObsoleteCount] = useState<number>(0);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Lookup state — username buffer, last successfully-fetched skill set,
-  // the verified display name from the hiscores response, and the FULL
-  // skill table (for quest-req auto-completion).
+  // Lookup state — username buffer, the verified display name, and the FULL
+  // long-form skill table (drives sim + quest-req autocomplete + boss-req
+  // filter, all from one dict).
   const [lookupName, setLookupName] = useState('');
-  const [lookupSkills, setLookupSkills] = useState<Partial<PlayerSkills> | null>(null);
   const [lookupAllSkills, setLookupAllSkills] = useState<AllSkills | null>(null);
   const [lookupDisplay, setLookupDisplay] = useState<string | null>(null);
   const [lookupBusy, setLookupBusy] = useState(false);
 
+  // Long-form skills for the current preset. Single source of truth used
+  // by the sim, the vendor/boss access checks, the quest-completable
+  // filter, and the killable-bosses filter.
+  const currentAllSkills = useMemo<AllSkills>(() => {
+    if (stats === 'lookup' && lookupAllSkills) return lookupAllSkills;
+    return makePresetSkills(stats === 'L99' ? 99 : 1);
+  }, [stats, lookupAllSkills]);
+
   const runSim = useCallback((
-    nextStats: StatsPreset,
     nextQuests: ReadonlySet<string>,
-    skillsOverride?: Partial<PlayerSkills> | null,
-    nextKilled?: ReadonlySet<string>,
+    nextSkills: AllSkills,
+    nextKilled: ReadonlySet<string>,
+    nextAcquired: ReadonlySet<string>,
   ) => {
     setRunning(true);
     setError(null);
     setTimeout(() => {
       try {
-        const progression = buildProgressionFromQuests(
-          nextStats,
-          nextQuests,
-          skillsOverride !== undefined ? skillsOverride : lookupSkills,
-        );
+        const progression = buildProgression(nextQuests, nextSkills);
         const vendorPool = getPlayerAccessiblePool(progression);
 
-        // Boss-drop pool from killed bosses. getPlayerBossDropPool walks the
-        // boss-drop graph transitively (Brimstone ring requires all 3 Hydra
-        // components, Voidwaker requires hilt+blade+gem, etc.) — so a drop
-        // only enters the pool if the player can both wield it AND obtain
-        // every required component from a boss they've killed.
+        // Boss + misc pools both go through the shared cross-pool resolver
+        // (src/lib/itemSourceIndex.ts), so a drop whose prereq lives in
+        // the OTHER pool resolves cleanly. Each pool builder gets both
+        // accessible sets — boss builder needs the misc set for cross-pool
+        // prereqs that point at misc items, and vice versa.
         //
-        // BossProgression's slayerLevel and isOnTaskFor are only consumed by
-        // canKillBoss() which getPlayerBossDropPool does NOT call (it
-        // already trusts the killedBosses set as the access decision). Stub
-        // values are safe here.
-        const killed = nextKilled ?? killedBosses;
+        // isOnTaskFor is unused by either pool builder (the curated
+        // killed/acquired sets are the authority); stub returns true.
         const bossProgression: BossProgression = {
           skills: progression.skills,
           questsStarted: progression.questsStarted,
           questsCompleted: progression.questsCompleted,
-          slayerLevel: (progression.skills as { slayer?: number }).slayer ?? 1,
           isOnTaskFor: () => true,
         };
-        const bossPool = getPlayerBossDropPool(bossProgression, killed);
+        const bossPool = getPlayerBossDropPool(bossProgression, nextKilled, nextAcquired);
+        const miscPool = getPlayerMiscDropPool(bossProgression, nextAcquired, nextKilled);
 
-        // Merge vendor + boss pools, dedupe by item id (boss drops sometimes
-        // overlap shop items — e.g. dragon dagger, dragon pickaxe).
+        // Merge vendor + boss + misc pools, dedupe by item id (overlap is
+        // common — e.g. dragon dagger / NMZ ring imbues / Granite shield).
         const seen = new Set<number>(vendorPool.map((p) => p.id));
-        const pool: EquipmentPiece[] = [...vendorPool];
+        const merged: EquipmentPiece[] = [...vendorPool];
         for (const item of bossPool) {
-          if (!seen.has(item.id)) { pool.push(item); seen.add(item.id); }
+          if (!seen.has(item.id)) { merged.push(item); seen.add(item.id); }
+        }
+        for (const item of miscPool) {
+          if (!seen.has(item.id)) { merged.push(item); seen.add(item.id); }
         }
 
+        // Drop obsolete items (src/upgrade/lib/obsoleteItems.ts) — gear that
+        // something always present alongside it beats in every situation.
+        // Killed bosses and acquired sources are the base table: the pool
+        // holds all their drops at once, so they're passed as always
+        // available. The filter gets the SAME source sets the pool was built
+        // from, so every dominator is in the pool and the sim's result can't
+        // change.
+        const none = new Set<string>();
+        const { obsoleteIds } = findObsoleteItems({
+          skills: progression.skills,
+          questsStarted: progression.questsStarted,
+          questsCompleted: progression.questsCompleted,
+          questPoints: progression.questPoints,
+          alwaysAvailableBosses: nextKilled,
+          alwaysAvailableMiscSources: nextAcquired,
+          obtainableBosses: none,
+          obtainableMiscSources: none,
+        });
+        const pool = merged.filter((p) => !obsoleteIds.has(p.id));
+
+        // Calc engine consumes the short-form combat-only subset.
+        const calcSkills = toCalcSkills(progression.skills);
         setPoolSize(pool.length);
+        setObsoleteCount(merged.length - pool.length);
         const next: ResultsByStyle = { melee: null, ranged: null, magic: null };
         for (const style of ['melee', 'ranged', 'magic'] as SimStyle[]) {
-          next[style] = simulateBestLoadout({ pool, monster, skills: progression.skills, style });
+          next[style] = simulateBestLoadout({
+            pool,
+            monster,
+            skills: calcSkills,
+            style,
+            // Passed through to simPrayers: gates Chivalry/Piety on King's
+            // Ransom completion, and Rigour/Augury/Deadeye/Mystic Vigour
+            // on the relevant boss being in the killed set.
+            questsCompleted: progression.questsCompleted,
+            accessibleBossSet: nextKilled,
+          });
         }
         setResults(next);
       } catch (e) {
@@ -281,13 +333,13 @@ export default function CrabSim() {
         setRunning(false);
       }
     }, 0);
-  }, [monster, lookupSkills, killedBosses]);
+  }, [monster]);
 
   // Run the sim with the current state. Single entry point — every other
   // handler just mutates state silently and the user clicks Run when ready.
   const runWithCurrent = useCallback(() => {
-    runSim(stats, completedQuests, undefined, killedBosses);
-  }, [runSim, stats, completedQuests, killedBosses]);
+    runSim(completedQuests, currentAllSkills, killedBosses, acquiredSources);
+  }, [runSim, completedQuests, currentAllSkills, killedBosses, acquiredSources]);
 
   // Fetch a player's hiscores via the proxy and, on success, switch to the
   // 'lookup' stats preset using the returned skill levels.
@@ -308,8 +360,6 @@ export default function CrabSim() {
         setError(body.error ?? `hiscores lookup failed (${resp.status})`);
         return;
       }
-      const skills = body.skills ?? {};
-      setLookupSkills(skills);
       setLookupAllSkills(body.allSkills ?? null);
       setLookupDisplay(body.name ?? name);
       setStats('lookup');
@@ -319,20 +369,6 @@ export default function CrabSim() {
       setLookupBusy(false);
     }
   }, [lookupName]);
-
-  // Build an AllSkills view for the current stats preset — used by the
-  // "auto-complete completable" button to check quest stat requirements.
-  // L1 = all-1s, L99 = all-99s, lookup = actual hiscores skills.
-  const currentAllSkills = useMemo<AllSkills>(() => {
-    if (stats === 'lookup' && lookupAllSkills) return lookupAllSkills;
-    const level = stats === 'L99' ? 99 : 1;
-    const out: AllSkills = {};
-    for (const s of ['attack', 'defence', 'strength', 'hitpoints', 'ranged', 'prayer', 'magic',
-      'cooking', 'woodcutting', 'fletching', 'fishing', 'firemaking', 'crafting', 'smithing',
-      'mining', 'herblore', 'agility', 'thieving', 'slayer', 'farming', 'runecraft', 'hunter',
-      'construction']) out[s] = level;
-    return out;
-  }, [stats, lookupAllSkills]);
 
   const autocompleteCompletable = () => {
     const completable = autocompletableQuests(allUnlocks, currentAllSkills);
@@ -353,8 +389,8 @@ export default function CrabSim() {
     });
   };
 
-  const lookupSummary = lookupDisplay && lookupSkills
-    ? `${lookupDisplay} — atk ${lookupSkills.atk} · str ${lookupSkills.str} · def ${lookupSkills.def} · ranged ${lookupSkills.ranged} · magic ${lookupSkills.magic} · prayer ${lookupSkills.prayer} · hp ${lookupSkills.hp}`
+  const lookupSummary = lookupDisplay && lookupAllSkills
+    ? `${lookupDisplay} — atk ${lookupAllSkills.attack} · str ${lookupAllSkills.strength} · def ${lookupAllSkills.defence} · ranged ${lookupAllSkills.ranged} · magic ${lookupAllSkills.magic} · prayer ${lookupAllSkills.prayer} · hp ${lookupAllSkills.hitpoints}`
     : null;
 
   // HTML5 drag-drop wiring. Plain native API — no library dep.
@@ -427,6 +463,123 @@ export default function CrabSim() {
 
   const bossAvailable = allBossNames.filter((b) => !killedBosses.has(b));
   const bossKilled = [...killedBosses].sort((a, b) => a.localeCompare(b));
+
+  // === Misc-source picker ===
+  // Mirrors the boss panel exactly. The misc registry covers minigame
+  // shops, quest rewards, slayer-monster unique drops, and skill-unlock
+  // items. Sources whose access reqs aren't met are red-chipped.
+  const accessibleMisc = useMemo<string[]>(() => {
+    return accessibleMiscSources(
+      Object.keys(MISC_REQS),
+      currentAllSkills,
+      completedQuests,
+      completedQuests,
+    );
+  }, [currentAllSkills, completedQuests]);
+  const accessibleMiscSet = useMemo(() => new Set(accessibleMisc), [accessibleMisc]);
+  const allMiscNames = useMemo(
+    () => Object.keys(MISC_REQS).sort((a, b) => a.localeCompare(b)),
+    [],
+  );
+
+  function describeMiscReqs(source: string): string {
+    const req = MISC_REQS[source];
+    if (!req) return 'no reqs';
+    const parts: string[] = [];
+    if (req.skills) {
+      for (const [s, lvl] of Object.entries(req.skills)) parts.push(`${s} ${lvl}`);
+    }
+    if (req.questsCompleted?.length) parts.push(`needs ${req.questsCompleted.join(', ')}`);
+    if (req.questsStarted?.length) parts.push(`needs started ${req.questsStarted.join(', ')}`);
+    return parts.join(', ') || 'no reqs';
+  }
+
+  const moveSource = (source: string, dropTo: 'available' | 'acquired') => {
+    setAcquiredSources((prev) => {
+      const next = new Set(prev);
+      if (dropTo === 'acquired') next.add(source);
+      else next.delete(source);
+      return next;
+    });
+  };
+
+  const autoMarkAccessibleSources = () => {
+    setAcquiredSources((prev) => new Set([...prev, ...accessibleMisc]));
+  };
+
+  const clearAcquiredSources = () => {
+    setAcquiredSources(new Set());
+  };
+
+  const onDragStartSource = (source: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', source);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  const onDropToSourcePanel = (target: 'available' | 'acquired') => (e: React.DragEvent) => {
+    e.preventDefault();
+    const source = e.dataTransfer.getData('text/plain');
+    if (!source) return;
+    if (target === 'acquired' && !accessibleMiscSet.has(source)) return;
+    moveSource(source, target);
+  };
+
+  const sourceAvailable = allMiscNames.filter((s) => !acquiredSources.has(s));
+  const sourceAcquired = [...acquiredSources].sort((a, b) => a.localeCompare(b));
+
+  const sourceChip = (source: string, panelSide: 'available' | 'acquired') => {
+    const req = MISC_REQS[source];
+    const onTask = req?.onSlayerTask;
+    const isAccessible = accessibleMiscSet.has(source);
+    const locked = panelSide === 'available' && !isAccessible;
+    const kindLabel = req?.kind ? ` [${req.kind.replace('_', ' ')}]` : '';
+    return (
+      <div
+        key={source}
+        draggable={!locked}
+        onDragStart={locked ? undefined : onDragStartSource(source)}
+        onClick={locked ? undefined : () => moveSource(source, panelSide === 'available' ? 'acquired' : 'available')}
+        style={{
+          padding: '0.35rem 0.6rem',
+          marginBottom: '0.25rem',
+          border: '1px solid ' + (locked ? '#7a2a2a' : (panelSide === 'acquired' ? '#5a8fc5' : '#444')),
+          background: locked ? '#3a1a1a' : (panelSide === 'acquired' ? '#1f3a5a' : '#1a1a1a'),
+          color: locked ? '#e6a0a0' : (panelSide === 'acquired' ? '#cce0f5' : '#bbb'),
+          borderRadius: 4,
+          fontSize: '0.8rem',
+          cursor: locked ? 'not-allowed' : 'grab',
+          userSelect: 'none',
+          opacity: locked ? 0.7 : 1,
+        }}
+        title={
+          locked
+            ? `Locked — does not meet reqs (${describeMiscReqs(source)})`
+            : (onTask ? 'Slayer-task locked but reachable — drag or click to toggle' : 'Drag between panels, or click to toggle')
+        }
+      >{source}{onTask ? ' (task)' : ''}<span style={{ color: '#666' }}>{kindLabel}</span></div>
+    );
+  };
+
+  const sourcePanel = (title: string, items: string[], target: 'available' | 'acquired') => (
+    <div
+      onDragOver={onDragOverPanel}
+      onDrop={onDropToSourcePanel(target)}
+      style={{
+        flex: 1,
+        minWidth: 220,
+        border: '1px dashed #333',
+        borderRadius: 6,
+        padding: '0.6rem',
+        background: '#101010',
+      }}
+    >
+      <h3 style={{ margin: '0 0 0.5rem', fontSize: '0.9rem', color: '#aaa' }}>
+        {title} <span style={{ color: '#666' }}>({items.length})</span>
+      </h3>
+      {items.length === 0
+        ? <p style={{ color: '#555', fontSize: '0.75rem', fontStyle: 'italic', margin: 0 }}>drop sources here</p>
+        : items.map((s) => sourceChip(s, target))}
+    </div>
+  );
 
   const bossChip = (boss: string, source: 'available' | 'killed') => {
     const onTask = BOSS_REQS[boss]?.onSlayerTask;
@@ -620,7 +773,7 @@ export default function CrabSim() {
         </button>
         <div style={{ color: '#888', fontSize: '0.85rem' }}>
           {totalCombos > 0
-            ? `pool: ${poolSize} items · ${totalCombos.toLocaleString()} combinations evaluated`
+            ? `pool: ${poolSize} items (${obsoleteCount} obsolete removed) · ${totalCombos.toLocaleString()} combinations evaluated`
             : 'configure stats / quests / bosses, then click Run'}
         </div>
       </section>
@@ -714,6 +867,49 @@ export default function CrabSim() {
         {bossPanel('Killed', bossKilled, 'killed')}
       </section>
 
+      <section style={{ marginTop: '1rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          onClick={autoMarkAccessibleSources}
+          disabled={running}
+          style={{
+            padding: '0.4rem 0.9rem',
+            fontSize: '0.85rem',
+            cursor: running ? 'default' : 'pointer',
+            background: '#2a4a3a',
+            color: '#cce6d4',
+            border: '1px solid #3a6a4a',
+            borderRadius: 4,
+          }}
+          title="Mark every currently-accessible misc source as Acquired. Locked sources (red) are skipped."
+        >
+          Auto-mark accessible sources
+        </button>
+        <button
+          onClick={clearAcquiredSources}
+          disabled={running}
+          style={{
+            padding: '0.4rem 0.9rem',
+            fontSize: '0.85rem',
+            cursor: running ? 'default' : 'pointer',
+            background: '#3a2a2a',
+            color: '#e6cccc',
+            border: '1px solid #6a3a3a',
+            borderRadius: 4,
+          }}
+          title="Move every acquired source back to Available"
+        >
+          Clear acquired
+        </button>
+        <span style={{ color: '#666', fontSize: '0.8rem' }}>
+          ({accessibleMisc.length} accessible · {allMiscNames.length - accessibleMisc.length} locked by reqs)
+        </span>
+      </section>
+
+      <section style={{ marginTop: '0.75rem', display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {sourcePanel('Available equipment sources', sourceAvailable, 'available')}
+        {sourcePanel('Acquired', sourceAcquired, 'acquired')}
+      </section>
+
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginTop: '1.25rem' }}>
         {(['melee', 'ranged', 'magic'] as SimStyle[]).map((s) => (
           <div key={s}>
@@ -722,7 +918,12 @@ export default function CrabSim() {
               : (
                 <article style={{ border: '1px dashed #2c2c2c', borderRadius: 8, padding: '2rem 1rem', textAlign: 'center', color: '#666' }}>
                   <h2 style={{ margin: 0, fontSize: '1.25rem' }}>{s[0].toUpperCase() + s.slice(1)}</h2>
-                  <p style={{ margin: '0.5rem 0 0' }}>Click Run to simulate.</p>
+                  {/* Immune styles are skipped by the sim — say so instead of prompting a Run. */}
+                  <p style={{ margin: '0.5rem 0 0' }}>
+                    {isMonsterImmuneToStyle(monster, s)
+                      ? `TzKal-Zuk is immune to ${s} — skipped.`
+                      : 'Click Run to simulate.'}
+                  </p>
                 </article>
               )}
           </div>

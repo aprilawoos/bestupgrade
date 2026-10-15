@@ -11,7 +11,7 @@
 'use client';
 
 import { ModelViewer } from '@/viewer/ModelViewer';
-import { bossBaselines, BossBaseline } from '@/lib/bosses';
+import { bossBaselines, BossBaseline } from '@/upgrade/lib/bosses';
 
 // === Card config ===
 // Hardcoded NPC IDs (cdn/json/monsters.json id field) + gear item IDs

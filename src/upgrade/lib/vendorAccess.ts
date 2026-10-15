@@ -5,52 +5,61 @@
 // vendor-stock items the player can both ACCESS (clear at least one shop's
 // entry req) and WIELD (clear the item's own skill req).
 //
+// Skill storage is long-form (attack/strength/defence/hitpoints/ranged/
+// magic/prayer/slayer/mining/herblore/...) — same convention as the
+// hiscores response, questRequirements.ts, bossRequirements.ts. The
+// vendor data generator translates short-form combat keys to long-form
+// at emit time, so the entries we consume here use long names.
+//
 // shopAccess fields supported:
-//   - Skill levels (atk, str, def, ranged, magic, prayer, hp, mining,
-//     herblore, etc.) — player.skills[key] must reach the value.
-//   - combatTotal — atk + str sum (Warriors' Guild simplification — note
+//   - Skill thresholds keyed by long-form OSRS name (attack/strength/...)
+//   - combatTotal — attack + strength sum (Warriors' Guild simplification —
 //     the real rule also accepts 99 in either alone, which this simplified
 //     model doesn't precisely capture).
 //   - questPoints — total QP threshold (Champions' Guild = 32).
 //   - questsStarted — every named quest must be at least started.
 //   - questsCompleted — every named quest must be completed.
 //
-// Item.requirements: skill-level reqs only (atk/def/ranged/etc.). Items
-// with quest reqs to WIELD are excluded at generator time.
+// Item.requirements: skill-level reqs only (long-form). Items with quest
+// reqs to WIELD are excluded at generator time.
 // ============================================================================
 
-import type { EquipmentPiece, PlayerSkills } from '@/types/Player';
+import type { EquipmentPiece } from '@/types/Player';
 import { availableEquipment } from '@/lib/Equipment';
-import { vendorStarterItems, VendorItem, VendorShopAccess } from '@/lib/vendorStarter';
+import { vendorStarterItems, VendorItem, VendorShopAccess } from '@/upgrade/lib/vendorStarter';
+
+/** Long-form skill dict: { attack: 99, slayer: 85, ... }. Same shape as
+ *  the hiscores `allSkills` response and questRequirements.AllSkills. */
+export type AllSkills = Record<string, number>;
 
 export interface PlayerProgression {
-  skills: Partial<PlayerSkills>;
+  skills: AllSkills;
   questPoints: number;
   questsStarted: ReadonlySet<string>;
   questsCompleted: ReadonlySet<string>;
 }
 
-function skillValue(skills: Partial<PlayerSkills>, key: string): number {
-  const v = (skills as Record<string, number | undefined>)[key];
-  return v ?? 1;
-}
+// Keys on a shop-access object that aren't skill thresholds. Everything
+// else is treated as a long-form skill name and looked up directly.
+const META_KEYS = new Set(['combatTotal', 'questPoints', 'questsStarted', 'questsCompleted']);
 
-const SKILL_KEYS = new Set(['atk', 'str', 'def', 'ranged', 'magic', 'prayer', 'hp', 'mining', 'herblore', 'runecraft']);
+function skillLevel(skills: AllSkills, key: string): number {
+  return skills[key] ?? 1;
+}
 
 export function meetsShopAccess(progression: PlayerProgression, access: VendorShopAccess): boolean {
   const { skills, questPoints, questsStarted, questsCompleted } = progression;
 
-  // Iterate every key on the access object — handle skills, combatTotal,
-  // questPoints, questsStarted, questsCompleted.
   for (const [key, raw] of Object.entries(access)) {
     if (raw === undefined) continue;
 
     if (key === 'combatTotal') {
       const need = raw as number;
-      const sum = skillValue(skills, 'atk') + skillValue(skills, 'str');
-      // Warriors' Guild also allows entry with 99 in either Atk or Str alone.
-      // Honour that fallback so a player at e.g. (99,1) isn't locked out.
-      if (sum < need && skillValue(skills, 'atk') < 99 && skillValue(skills, 'str') < 99) return false;
+      const sum = skillLevel(skills, 'attack') + skillLevel(skills, 'strength');
+      // Warriors' Guild also allows entry with 99 in either Attack or
+      // Strength alone. Honour that fallback so a player at e.g. (99,1)
+      // isn't locked out.
+      if (sum < need && skillLevel(skills, 'attack') < 99 && skillLevel(skills, 'strength') < 99) return false;
       continue;
     }
     if (key === 'questPoints') {
@@ -72,25 +81,21 @@ export function meetsShopAccess(progression: PlayerProgression, access: VendorSh
       }
       continue;
     }
-    if (SKILL_KEYS.has(key)) {
-      if (skillValue(skills, key) < (raw as number)) return false;
-      continue;
-    }
-    // Unknown key — fail closed.
-    return false;
+    if (META_KEYS.has(key)) continue;
+    // Any other key is a long-form skill threshold.
+    if (skillLevel(skills, key) < (raw as number)) return false;
   }
   return true;
 }
 
 export function meetsItemRequirements(progression: PlayerProgression, reqs: Record<string, number>): boolean {
-  // Items only carry skill reqs (combat or otherwise — never quest).
   for (const [key, level] of Object.entries(reqs)) {
     if (key === 'combatTotal') {
-      const sum = skillValue(progression.skills, 'atk') + skillValue(progression.skills, 'str');
+      const sum = skillLevel(progression.skills, 'attack') + skillLevel(progression.skills, 'strength');
       if (sum < level) return false;
       continue;
     }
-    if (skillValue(progression.skills, key) < level) return false;
+    if (skillLevel(progression.skills, key) < level) return false;
   }
   return true;
 }
