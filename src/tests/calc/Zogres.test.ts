@@ -70,7 +70,7 @@ describe('Zogre damage resistances', () => {
   test('Brutal arrows do not skip damage reduction when not used', () => {
     const { maxHit } = calculatePlayerVsNpc(m, getTestPlayer(m, {
       equipment: {
-        weapon: findEquipment('Bow of faerdhinen (c)'),
+        weapon: findEquipment('Bow of Faerdhinen (c)'),
         ammo: findEquipment('Adamant brutal'),
       },
       style: {

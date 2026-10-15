@@ -45,7 +45,6 @@ const VENDORED = [
   'src/worker',
   'src/tests',
   'src/public',
-  'src/app/components/player/demonicPactsLeague',
   'cdn/json',
   'jest.config.ts',
 ];
@@ -110,7 +109,9 @@ log(`\n  total: ${totalDiffering} file(s) would change`);
 const extractTranspilePackages = (src) => {
   const m = src.match(/transpilePackages\s*:\s*\[([^\]]+)\]/);
   if (!m) return null;
-  return m[1].split(',').map((s) => s.trim().replace(/['"]/g, '')).filter(Boolean).sort();
+  // Strip // comments first — ours documents the list inline.
+  const body = m[1].replace(/\/\/[^\n]*/g, '');
+  return body.split(',').map((s) => s.trim().replace(/['"]/g, '')).filter(Boolean).sort();
 };
 
 const upstreamNextCfg = readFileSync(join(upstreamRoot, 'next.config.js'), 'utf8');
@@ -183,9 +184,9 @@ const testResult = spawnSync('npm', ['test', '--', '--silent'], {
 });
 if (testResult.status !== 0) {
   log('\n! tests failed.');
-  log('  Could be a real calc regression in upstream, OR the known-broken');
-  log('  Leagues tests that fail upstream too. Inspect output above to');
-  log('  decide whether to investigate or accept.');
+  log('  Could be a real calc regression in upstream, or one of our own');
+  log('  tests (src/upgrade/tests) reacting to the new calc / item data.');
+  log('  Inspect output above to decide whether to investigate or accept.');
   process.exit(1);
 }
 

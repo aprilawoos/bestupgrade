@@ -7,33 +7,30 @@ import UserIssueType from '@/enums/UserIssueType';
 import { MonsterAttribute } from '@/enums/MonsterAttribute';
 import {
   CAST_STANCES,
+  ICE_DEMON_IDS,
   IMMUNE_TO_BURN_DAMAGE_NPC_IDS,
   YAMA_IDS,
   YAMA_VOID_FLARE_IDS,
 } from '@/lib/constants';
 import { UserIssue } from '@/types/State';
 import { CalcDetails, DetailEntry } from '@/lib/CalcDetails';
-import { Factor, MinMax } from '@/lib/Math';
+import { Factor } from '@/lib/Math';
 import { scaleMonster } from '@/lib/MonsterScaling';
 import { getCombatStylesForCategory, isDefined } from '@/utils';
 import { EquipmentCategory } from '@/enums/EquipmentCategory';
 import { getRangedDamageType } from '@/types/PlayerCombatStyle';
 import { AttackDistribution, HitDistribution } from '@/lib/HitDist';
+import { Spellement } from '@/types/Spell';
 
 export interface CalcOpts {
   loadoutName?: string,
   detailedOutput?: boolean,
   disableMonsterScaling?: boolean,
   usingSpecialAttack?: boolean,
-  isBlindBag?: boolean,
-  blindBagDistance?: number,
-  blindBagUniques?: number,
-  isEcho?: boolean,
   overrides?: {
     accuracy?: number,
     attackRoll?: number,
     defenceRoll?: number,
-    maxHit?: MinMax,
   },
 }
 
@@ -50,10 +47,6 @@ const DEFAULT_OPTS: Required<InternalOpts> = {
   detailedOutput: false,
   disableMonsterScaling: false,
   usingSpecialAttack: false,
-  isBlindBag: false,
-  blindBagDistance: 1,
-  blindBagUniques: 1,
-  isEcho: false,
   noInit: false,
   overrides: {},
 };
@@ -94,7 +87,7 @@ export default class BaseCalc {
     this.baseMonster = monster;
     this.monster = (this.opts.disableMonsterScaling || this.opts.noInit) ? monster : scaleMonster(monster);
 
-    if (!this.opts.noInit || this.opts.isBlindBag) {
+    if (!this.opts.noInit) {
       this.canonicalizeEquipment();
       this.allEquippedItems = Object.values(this.player.equipment).filter((v) => v !== null).flat(1).map((eq: EquipmentPiece | null) => eq?.name || '');
       this.sanitizeInputs();
@@ -192,12 +185,12 @@ export default class BaseCalc {
   }
 
   /**
-   * Helper function that calculates the hit chance for mechanics that force a maximum accuracy roll.
+   * Helper function that calculates the hit chance for mechanics that force a specific attack roll, but still use a random defence roll.
    * @param atk Attack roll of the player
-   * @param def Defence roll of the NPC
+   * @param def Max defence roll of the NPC
    * @returns Hit chance of the attack
    */
-  public static getMaxAccuracyHitChance(atk: number, def: number): number {
+  public static getFixedAttackHitChance(atk: number, def: number): number {
     const stdRoll = (attack: number, defence: number) => ((attack > defence)
       ? 1
       : attack / (defence + 1));
@@ -304,7 +297,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Slayer_helmet
    */
   protected isWearingSlayerHelmet(): boolean {
-    return this.wearing(['Slayer helmet', 'Slayer helmet (i)']) || this.player.leagues.six.cullingSpree;
+    return this.wearing(['Slayer helmet', 'Slayer helmet (i)']);
   }
 
   /**
@@ -312,7 +305,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Black_mask
    */
   protected isWearingBlackMask(): boolean {
-    return this.isWearingImbuedBlackMask() || this.wearing(['Black mask', 'Slayer helmet']) || this.player.leagues.six.cullingSpree;
+    return this.isWearingImbuedBlackMask() || this.wearing(['Black mask', 'Slayer helmet']);
   }
 
   /**
@@ -320,7 +313,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Black_mask_(i)
    */
   protected isWearingImbuedBlackMask(): boolean {
-    return this.wearing(['Black mask (i)', 'Slayer helmet (i)', 'V\'s helm']) || this.player.leagues.six.cullingSpree;
+    return this.wearing(['Black mask (i)', 'Slayer helmet (i)', 'V\'s helm']);
   }
 
   /**
@@ -360,7 +353,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Crystal_bow
    */
   protected isWearingCrystalBow(): boolean {
-    return this.wearing('Crystal bow') || this.allEquippedItems.some((ei) => ei.includes('Bow of faerdhinen'));
+    return this.wearing('Crystal bow') || this.allEquippedItems.some((ei) => ei.includes('Bow of Faerdhinen'));
   }
 
   /**
@@ -388,7 +381,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Scythe_of_vitur
    */
   protected isWearingScythe(): boolean {
-    return this.wearing('Scythe of vitur') || this.allEquippedItems.some((ei) => ei.includes('of vitur'));
+    return this.wearing('Scythe of Vitur') || this.allEquippedItems.some((ei) => (ei.includes('of vitur') || ei.includes('of Vitur')));
   }
 
   /**
@@ -400,7 +393,6 @@ export default class BaseCalc {
       'Sulphur blades',
       'Glacial temotli',
       'Earthbound tecpatl',
-      'Infernal tecpatl',
     ]);
   }
 
@@ -442,7 +434,7 @@ export default class BaseCalc {
    */
 
   protected isWearingAhrims(): boolean {
-    return this.wearingAll(["Ahrim's staff", "Ahrim's hood", "Ahrim's robetop", "Ahrim's robeskirt", 'Amulet of the damned']);
+    return this.wearingAll(["Ahrim's staff", "Ahrim's hood", "Ahrim's robetop", "Ahrim's robeskirt", 'Amulet of the Damned']);
   }
 
   /**
@@ -450,7 +442,7 @@ export default class BaseCalc {
    * @see https://oldschool.runescape.wiki/w/Torag_the_Corrupted%27s_equipment
    */
   protected isWearingTorags(): boolean {
-    return this.wearingAll(["Torag's helm", "Torag's platebody", "Torag's platelegs", "Torag's hammers", 'Amulet of the damned']);
+    return this.wearingAll(["Torag's helm", "Torag's platebody", "Torag's platelegs", "Torag's hammers", 'Amulet of the Damned']);
   }
 
   protected isWearingBloodMoonSet(): boolean {
@@ -463,8 +455,13 @@ export default class BaseCalc {
    */
 
   protected isWearingSilverWeapon(): boolean {
-    if (this.player.equipment.ammo?.name.startsWith('Silver bolts')
-      && this.player.style.type === 'ranged') {
+    if (this.player.style.type === 'ranged' && this.wearing([
+      'Silver bolts#Unpoisoned',
+      'Silver bolts#Poison',
+      'Silver bolts#Poison+',
+      'Silver bolts#Poison++',
+      'Blisterwood stake',
+    ])) {
       return true;
     }
 
@@ -472,6 +469,7 @@ export default class BaseCalc {
       'Blessed axe',
       'Ivandis flail',
       'Blisterwood flail',
+      'Hallowed flail',
       'Silver sickle',
       'Silver sickle (b)',
       'Emerald sickle',
@@ -483,7 +481,7 @@ export default class BaseCalc {
       'Silverlight',
       'Darklight',
       'Arclight',
-      'Rod of ivandis',
+      'Rod of Ivandis',
       'Wolfbane',
     ]);
   }
@@ -494,12 +492,17 @@ export default class BaseCalc {
    */
   protected wearingVampyrebane(tier: MonsterAttribute.VAMPYRE_2 | MonsterAttribute.VAMPYRE_3): boolean {
     const t2 = tier === MonsterAttribute.VAMPYRE_2;
+    if (this.player.style.type === 'ranged' && this.player.equipment.weapon?.name === 'Blisterwood stake') {
+      return true;
+    }
     return (t2 || this.isUsingMeleeStyle())
       && this.wearing([
-        ...(t2 ? ['Rod of ivandis'] : []),
+        ...(t2 ? ['Rod of Ivandis'] : []),
         'Ivandis flail',
         'Blisterwood sickle',
         'Blisterwood flail',
+        'Hallowed flail',
+        'Sunspear',
       ]);
   }
 
@@ -533,6 +536,7 @@ export default class BaseCalc {
         'Broad arrows',
         'Broad bolts',
         'Amethyst broad bolts',
+        'Seeking broad arrows',
       ])
       && this.player.style.type === 'ranged'
     ) {
@@ -567,10 +571,6 @@ export default class BaseCalc {
     }
 
     if (this.player.style.type === 'magic') {
-      return true;
-    }
-
-    if (weapon.name === "King's barrage") {
       return true;
     }
 
@@ -613,14 +613,37 @@ export default class BaseCalc {
 
     switch (this.player.spell?.name) {
       case 'Saradomin Strike':
-        return this.wearing(['Saradomin cape', 'Imbued saradomin cape', 'Saradomin max cape', 'Imbued saradomin max cape']);
+        return this.wearing(['Saradomin cape', 'Imbued Saradomin cape', 'Saradomin max cape', 'Imbued Saradomin max cape']);
       case 'Claws of Guthix':
-        return this.wearing(['Guthix cape', 'Imbued guthix cape', 'Guthix max cape', 'Imbued guthix max cape']);
+        return this.wearing(['Guthix cape', 'Imbued Guthix cape', 'Guthix max cape', 'Imbued Guthix max cape']);
       case 'Flames of Zamorak':
-        return this.wearing(['Zamorak cape', 'Imbued zamorak cape', 'Zamorak max cape', 'Imbued zamorak max cape']);
+        return this.wearing(['Zamorak cape', 'Imbued Zamorak cape', 'Zamorak max cape', 'Imbued Zamorak max cape']);
       default:
         return false;
     }
+  }
+
+  protected getSpellement(): Spellement | null {
+    return this.player.spell?.element ?? null;
+  }
+
+  protected hasMatchingElementalAmulet(): boolean {
+    const spellement = this.getSpellement();
+    if (!spellement) {
+      return false;
+    }
+    if (this.wearing('Elemental amulet')) {
+      return true;
+    }
+
+    const amuletByElement: Record<Spellement, string> = {
+      air: 'Amulet of air',
+      water: 'Amulet of water',
+      earth: 'Amulet of earth',
+      fire: 'Amulet of fire',
+    };
+
+    return this.wearing(amuletByElement[spellement]);
   }
 
   /**
@@ -644,7 +667,7 @@ export default class BaseCalc {
         return this.wearing(['Scorching bow']);
 
       default:
-        return this.wearing(['Silverlight', 'Darklight', 'Arclight', 'Emberlight', 'Bone claws', 'Burning claws', 'Infernal tecpatl']);
+        return this.wearing(['Silverlight', 'Darklight', 'Arclight', 'Emberlight', 'Bone claws', 'Burning claws']);
     }
   }
 
@@ -692,7 +715,7 @@ export default class BaseCalc {
   }
 
   protected isSlayerMonster(): boolean {
-    return this.monster.is_slayer_monster;
+    return this.monster.is_slayer_monster || this.monster.id === -1;
   }
 
   protected addIssue(type: UserIssueType, message: string) {
@@ -708,6 +731,8 @@ export default class BaseCalc {
       return 120;
     } if (YAMA_VOID_FLARE_IDS.includes(this.monster.id)) {
       return 200;
+    } if (ICE_DEMON_IDS.includes(this.monster.id)) {
+      return 115;
     }
 
     return 100;
@@ -749,7 +774,7 @@ export default class BaseCalc {
       }
 
       // these staves use a built-in spell for their spec
-      if (['Accursed sceptre (a)', 'Eldritch nightmare staff', 'Volatile nightmare staff'].includes(eq.weapon?.name || '')) {
+      if (['Accursed sceptre (a)', 'Eldritch Nightmare staff', 'Volatile Nightmare staff'].includes(eq.weapon?.name || '')) {
         this.player = {
           ...this.player,
           style: getCombatStylesForCategory(EquipmentCategory.POWERED_STAFF)[0],
@@ -778,10 +803,10 @@ export default class BaseCalc {
     const spellName = this.player.spell?.name;
     if (
       (spellName === 'Iban Blast' && !this.wearing(['Iban\'s staff', 'Iban\'s staff (u)']))
-      || (spellName === 'Saradomin Strike' && !this.wearing(['Saradomin staff', 'Staff of light']))
+      || (spellName === 'Saradomin Strike' && !this.wearing(['Saradomin staff', 'Staff of Light']))
       || (spellName === 'Claws of Guthix' && !this.wearing(['Guthix staff', 'Void knight mace', 'Staff of balance']))
       || (spellName === 'Flames of Zamarok' && !this.wearing(['Zamorak staff', 'Staff of the dead', 'Toxic staff of the dead', 'Thammaron\'s sceptre (a)', 'Accursed sceptre (a)']))
-      || (spellName === 'Magic Dart' && !this.wearing(['Slayer\'s staff', 'Slayer\'s staff (e)', 'Staff of the dead', 'Toxic staff of the dead', 'Staff of light', 'Staff of balance']))
+      || (spellName === 'Magic Dart' && !this.wearing(['Slayer\'s staff', 'Slayer\'s staff (e)', 'Staff of the Dead', 'Toxic staff of the Dead', 'Staff of Light', 'Staff of Balance']))
     ) {
       this.player = {
         ...this.player,
